@@ -12,7 +12,7 @@
  */
 (function () {
   'use strict';
-  var VERSION = '1.3.0';
+  var VERSION = '1.3.1';
 
   function newerVersion(a, b) {
     var x = String(a).split('.'), y = String(b).split('.');
@@ -427,14 +427,17 @@
   // ---- Кнопка «Обновить» в шапке ----
   // 1) синхронизировать всё сейчас, 2) проверить новую версию плагина на GitHub,
   // 3) перезагрузить Лампу (заново подтянутся Лампа, этот и остальные плагины)
-  var REPO_RAW = 'https://raw.githubusercontent.com/8bytsdvg/LampaSync/main/lampa-sync.js';
+  // API GitHub отдаёт файл без кэша (raw.githubusercontent и jsDelivr кэшируют)
+  var REPO_API = 'https://api.github.com/repos/8bytsdvg/LampaSync/contents/lampa-sync.js?ref=main';
   var CDN_PURGE = 'https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js';
 
   // Новая версия с GitHub: сохраняем её код локально (запустится при следующем старте Лампы)
   // и заодно просим CDN сбросить кэш
   function checkPluginUpdate() {
     try { localStorage.setItem('gsync_update_check', String(Date.now())); } catch (e) {}
-    return fetch(REPO_RAW + '?t=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+    var headers = { 'Accept': 'application/vnd.github.raw' };
+    if (cfg) headers['Authorization'] = 'Bearer ' + cfg.token;
+    return fetch(REPO_API, { cache: 'no-store', headers: headers }).then(function (r) {
       return r.ok ? r.text() : '';
     }).then(function (code) {
       var m = code.match(/var VERSION = '([0-9.]+)'/);

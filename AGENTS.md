@@ -11,7 +11,7 @@
 | `torrserver-menubar/` | Фоновый Swift-помощник macOS без значка: LaunchAgent `local.torrserver.menu` (KeepAlive, флаг `--background`); по `NSWorkspace` didLaunch/didTerminate включает TorrServer вместе с `~/Applications/Lampa.app` и выключает при её закрытии; перезапуск упавшего сервера (≤3 раз/мин); по SIGTERM останавливает сервер; при старте без Лампы убивает осиротевший сервер; повторное открытие `.app` — ручное вкл/выкл |
 | `tests/sync.test.mjs` | Симуляция двух устройств и GitHub API; `node tests/sync.test.mjs` |
 
-Плагин раздаётся через jsDelivr: `https://cdn.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js`. jsDelivr кэширует ветку до 12 ч, поэтому плагин обновляет себя сам: раз в 6 ч (и по кнопке «Обновить») берёт `lampa-sync.js` с `raw.githubusercontent.com`; если `VERSION` новее — кладёт код в `localStorage` (`gsync_code`, `gsync_code_version`), и при следующем старте загрузчик в начале файла запускает его вместо копии с CDN (`window.__lampa_gsync_boot`). После пуша в `main` всё равно полезно сбросить кэш jsDelivr — для новых установок:
+Плагин раздаётся через jsDelivr: `https://cdn.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js`. jsDelivr кэширует ветку до 12 ч, поэтому плагин обновляет себя сам: раз в 6 ч (и по кнопке «Обновить») берёт `lampa-sync.js` через API GitHub (`/repos/8bytsdvg/LampaSync/contents/lampa-sync.js`, без кэша); если `VERSION` новее — кладёт код в `localStorage` (`gsync_code`, `gsync_code_version`), и при следующем старте загрузчик в начале файла запускает его вместо копии с CDN (`window.__lampa_gsync_boot`). После пуша в `main` всё равно полезно сбросить кэш jsDelivr — для новых установок:
 ```
 curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 ```
@@ -63,7 +63,7 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 | `Lampa.Torrent.start(element, movie)` | запуск раздачи без поиска |
 | `Lampa.Player.listener 'create'` | macOS: стартовая позиция для IINA и запись запуска |
 | `Lampa.SettingsApi` | раздел «Синхронизация таймкодов» |
-| `Lampa.Head.addIcon` | кнопка «Обновить» (после `.open--search`): `refreshAll()` — `pollIina` (Mac) → `cycle({force, final})` → проверка `VERSION` в `raw.githubusercontent.com` → при новой версии сброс кэша jsDelivr → `location.reload()` |
+| `Lampa.Head.addIcon` | кнопка «Обновить» (после `.open--search`): `refreshAll()` — `pollIina` (Mac) → `cycle({force, final})` → проверка `VERSION` через API GitHub → при новой версии сброс кэша jsDelivr → `location.reload()` |
 
 ## Как время из внешнего плеера попадает в Лампу
 
