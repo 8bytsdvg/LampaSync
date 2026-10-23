@@ -21,5 +21,25 @@ cat > $A/Contents/Info.plist <<PLIST
 </dict></plist>
 PLIST
 codesign --force -s - $A
+osascript -e 'quit app id "local.torrserver.menu"' 2>/dev/null || true
 mkdir -p ~/Applications && rm -rf ~/Applications/TorrServer.app && cp -R $A ~/Applications/
-echo "Готово: ~/Applications/TorrServer.app"
+
+# Автозапуск при входе в систему в фоновом режиме: сервер включается вместе с Лампой
+PL=~/Library/LaunchAgents/local.torrserver.menu.plist
+mkdir -p ~/Library/LaunchAgents
+cat > $PL <<AGENT
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.torrserver.menu</string>
+  <key>ProgramArguments</key><array>
+    <string>$HOME/Applications/TorrServer.app/Contents/MacOS/TorrServerMenu</string>
+    <string>--background</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>ProcessType</key><string>Interactive</string>
+</dict></plist>
+AGENT
+launchctl bootout gui/$(id -u)/local.torrserver.menu 2>/dev/null || true
+launchctl bootstrap gui/$(id -u) $PL
+echo "Готово: ~/Applications/TorrServer.app (запускается при входе, включает сервер вместе с Лампой)"
