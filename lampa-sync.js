@@ -14,7 +14,7 @@
   'use strict';
   if (window.__lampa_gsync) return;
   window.__lampa_gsync = true;
-  var VERSION = '1.1.0';
+  var VERSION = '1.1.1';
 
   var TAG = 'LampaSync';
   var MAX_ITEMS = 3000;
@@ -894,7 +894,18 @@
       '.gsync-pin-badge svg{width:1em;height:1em}</style>');
   }
 
+  // Мак: Лампа отменяет действие браузера у любой клавиши (рассчитана на пульт),
+  // из-за этого в приложении Safari «не срабатывают» ⌘Q, ⌘W, ⌘C/⌘V и т. п.
+  // Перехватываем сочетания с ⌘ раньше Лампы и пропускаем их к macOS.
+  function passMacShortcuts() {
+    if (!(Lampa.Platform.macOS && Lampa.Platform.macOS())) return;
+    var pass = function (e) { if (e.metaKey) e.stopImmediatePropagation(); };
+    window.addEventListener('keydown', pass, true);
+    window.addEventListener('keyup', pass, true);
+  }
+
   function start() {
+    passMacShortcuts();
     addStyles();
     setupSettingsSync();
     setupPins();
