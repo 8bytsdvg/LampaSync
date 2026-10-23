@@ -14,7 +14,7 @@
   'use strict';
   if (window.__lampa_gsync) return;
   window.__lampa_gsync = true;
-  var VERSION = '1.2.0';
+  var VERSION = '1.2.1';
 
   var TAG = 'LampaSync';
   var MAX_ITEMS = 3000;
@@ -739,6 +739,7 @@
       if (movie[f] !== undefined && c[f] === undefined) c[f] = movie[f];
     });
     if (!c.source) c.source = 'tmdb';
+    delete c.overview; // описание не нужно для постера, а Gist раздувает
     return c;
   }
 

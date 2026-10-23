@@ -28,6 +28,7 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 | `pins.json` | `id_<tmdb id>` | «Моя раздача»: `{title, Title, MagnetUri, Link, Tracker, size, updated}` или `{deleted: true, updated}` |
 | `last.json` | `id_<tmdb id>` | последняя запущенная раздача, тот же формат |
 | `settings.json` | имя настройки Лампы | `{value, updated}` (сейчас только `full_btn_priority`) |
+| `library.json` | `id_<tmdb id>` | «Моя библиотека»: `{card, watched: мс\|0, flags: {watching, later, planned, waiting, like, done, dropped: мс}, updated}` или `{deleted: true, updated}` |
 
 Старые ключи `tmdb_<id>` / `cub_<id>` нормализуются в `id_<id>` при чтении (`normPins`).
 
