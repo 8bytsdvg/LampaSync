@@ -60,7 +60,7 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 | `Lampa.Torrent.start(element, movie)` | запуск раздачи без поиска |
 | `Lampa.Player.listener 'create'` | macOS: стартовая позиция для IINA и запись запуска |
 | `Lampa.SettingsApi` | раздел «Синхронизация таймкодов» |
-| `Lampa.Head.addIcon` | кнопка синхронизации (ставится после `.open--search`) |
+| `Lampa.Head.addIcon` | кнопка «Обновить» (после `.open--search`): `refreshAll()` — `pollIina` (Mac) → `cycle({force, final})` → проверка `VERSION` в `raw.githubusercontent.com` → при новой версии сброс кэша jsDelivr → `location.reload()` |
 
 ## Как время из внешнего плеера попадает в Лампу
 
@@ -85,3 +85,4 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 - Меняете цикл синхронизации — прогоните `node tests/sync.test.mjs` (все проверки должны пройти).
 - Секреты (токены, ID Gist) в репозиторий не коммитить.
 - После пуша в `main` — сброс кэша jsDelivr (см. выше).
+- Меняя плагин, повышайте `VERSION` в `lampa-sync.js`: по ней кнопка «Обновить» понимает, что вышла новая версия.

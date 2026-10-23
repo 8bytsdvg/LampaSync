@@ -14,7 +14,7 @@
   'use strict';
   if (window.__lampa_gsync) return;
   window.__lampa_gsync = true;
-  var VERSION = '1.0.1';
+  var VERSION = '1.1.0';
 
   var TAG = 'LampaSync';
   var MAX_ITEMS = 3000;
@@ -219,11 +219,11 @@
 
   function pollIina() {
     var recent = launches().filter(function (l) { return Date.now() - l.at < 3 * 3600 * 1000 && streamInfo(l.url); });
-    if (!recent.length) return;
+    if (!recent.length) return Promise.resolve();
     var list = launches();
-    recent.forEach(function (l) {
+    return Promise.all(recent.map(function (l) {
       var info = streamInfo(l.url);
-      viewed(info, { action: 'list', hash: info.hash }).then(function (rows) {
+      return viewed(info, { action: 'list', hash: info.hash }).then(function (rows) {
         var row = (rows || []).filter(function (r) { return r.file_index == info.index; })[0];
         if (!row || !row.timecode || row.timecode === l.tc) return;
         var local = Lampa.Timeline.view(l.hash) || {};
@@ -236,7 +236,7 @@
         saveLaunches(list);
         log('iina position', l.hash, row.timecode);
       }).catch(function () {});
-    });
+    }));
   }
 
   // ---- Единый цикл синхронизации ----
@@ -396,22 +396,58 @@
 
   function push() { if (hasDirty()) cycle({ final: true }).catch(function () {}); }
 
-  // Кнопка в шапке: отправить своё и сразу забрать чужое
+  // ---- Кнопка «Обновить» в шапке ----
+  // 1) синхронизировать всё сейчас, 2) проверить новую версию плагина на GitHub,
+  // 3) перезагрузить Лампу (заново подтянутся Лампа, этот и остальные плагины)
+  var REPO_RAW = 'https://raw.githubusercontent.com/8bytsdvg/LampaSync/main/lampa-sync.js';
+  var CDN_PURGE = 'https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js';
+
+  function newerVersion(a, b) {
+    var x = String(a).split('.'), y = String(b).split('.');
+    for (var i = 0; i < 3; i++) {
+      var d = (Number(x[i]) || 0) - (Number(y[i]) || 0);
+      if (d) return d > 0;
+    }
+    return false;
+  }
+
+  function checkPluginUpdate() {
+    return fetch(REPO_RAW + '?t=' + Date.now(), { cache: 'no-store' }).then(function (r) {
+      return r.ok ? r.text() : '';
+    }).then(function (code) {
+      var m = code.match(/var VERSION = '([0-9.]+)'/);
+      if (!m || !newerVersion(m[1], VERSION)) return null;
+      // сбросить кэш CDN, чтобы при перезагрузке скачалась новая версия
+      return fetch(CDN_PURGE, { mode: 'no-cors' }).catch(function () {}).then(function () { return m[1]; });
+    }).catch(function () { return null; });
+  }
+
+  function refreshAll() {
+    if (!headBtn || headBtn.data('busy')) return;
+    headBtn.data('busy', true).css('opacity', 0.4);
+    Lampa.Noty.show('Обновление…');
+    var isMac = Lampa.Platform.macOS && Lampa.Platform.macOS();
+    var sync = (isMac ? pollIina() : Promise.resolve()).then(function () {
+      return cfg ? cycle({ force: true, final: true }) : 0;
+    });
+    Promise.all([
+      sync.then(function (n) { return { n: n }; }, function (e) { return { err: e }; }),
+      checkPluginUpdate()
+    ]).then(function (res) {
+      var s = res[0], ver = res[1];
+      var msg = s.err ? 'Синхронизация: ошибка — ' + s.err.message
+        : (cfg ? (s.n ? 'Синхронизировано: ' + s.n : 'Данные актуальны') : 'Синхронизация не настроена');
+      if (ver) msg += '. Новая версия ' + ver;
+      Lampa.Noty.show(msg + '. Перезапуск…');
+      setTimeout(function () { location.reload(); }, ver ? 3000 : 1500);
+    });
+  }
+
   function addHeadButton() {
     if (!Lampa.Head || !Lampa.Head.addIcon) return;
     var icon = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a9 9 0 1 1-3-6.7L21 8"/><path d="M21 3v5h-5"/></svg>';
-    var btn = headBtn = Lampa.Head.addIcon(icon, function () {
-      if (!cfg) return Lampa.Noty.show('Синхронизация: введите ключ в настройках');
-      btn.css('opacity', 0.4);
-      if (Lampa.Platform.macOS && Lampa.Platform.macOS()) pollIina();
-      cycle({ force: true }).then(function (count) {
-        btn.css('opacity', '');
-        Lampa.Noty.show(count ? 'Обновлено: ' + count : 'Всё уже актуально');
-      }, function (err) {
-        btn.css('opacity', '');
-        Lampa.Noty.show('Синхронизация: ошибка — ' + err.message);
-      });
-    });
+    var btn = headBtn = Lampa.Head.addIcon(icon, refreshAll);
+    btn.attr('title', 'Обновить');
     // Ставим сразу после поиска; поиск добавляется позже, поэтому ждём его
     var tries = 0;
     (function place() {
