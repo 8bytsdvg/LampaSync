@@ -12,7 +12,7 @@
  */
 (function () {
   'use strict';
-  var VERSION = '1.3.1';
+  var VERSION = '1.4.0';
 
   function newerVersion(a, b) {
     var x = String(a).split('.'), y = String(b).split('.');
@@ -361,6 +361,7 @@
           applied += applyLibrary(fileJson(fresh, 'library.json') || {});
           applied += applySettings(fileJson(fresh, 'settings.json') || {});
           reconcile(fresh);
+          backfillHistory();
         }
         if (!hasDirty()) return applied;
         var onlyTimeline = !Object.keys(dirty.pins).length && !Object.keys(dirty.last).length && !Object.keys(dirty.library).length && !dirty.settings;
@@ -812,12 +813,45 @@
     var key = cardKey(movie);
     if (!key || !(movie.title || movie.name)) return;
     var e = libEntry(movie);
-    if (e && !e.deleted && Date.now() - (e.watched || 0) < 10 * 60 * 1000) return;
+    // один запуск даёт несколько событий (история, торрент, плеер) — склеиваем их
+    if (e && !e.deleted && Date.now() - (e.watched || 0) < 30 * 1000) return;
     e = e && !e.deleted ? JSON.parse(JSON.stringify(e)) : { flags: {} };
     e.card = slimCard(movie);
     e.watched = Date.now();
     e.updated = Date.now();
     saveLib(key, e);
+  }
+
+  // Один раз на устройстве: перенести уже накопленную историю Лампы в «Просмотренное»,
+  // сохраняя её порядок (последний просмотр — первым). Новые просмотры получают время «сейчас» и встают выше.
+  function backfillHistory() {
+    if (Lampa.Storage.get('gsync_history_imported', false)) return;
+    var hist = [];
+    try { hist = Lampa.Favorite.get({ type: 'history' }) || []; } catch (e) { return; }
+    var all = allLib(), oldest = Date.now();
+    Object.keys(all).forEach(function (k) { if (all[k] && all[k].watched && all[k].watched < oldest) oldest = all[k].watched; });
+    var added = 0;
+    hist.forEach(function (card, i) {
+      var key = cardKey(card);
+      if (!key || !(card.title || card.name)) return;
+      var e = all[key];
+      if (e && !e.deleted && e.watched) return; // уже есть (с этого или другого устройства)
+      var t = oldest - 1000 * (i + 1);
+      e = e && !e.deleted ? JSON.parse(JSON.stringify(e)) : { flags: {} };
+      e.card = slimCard(card);
+      e.watched = t;
+      e.updated = t;
+      all[key] = e;
+      dirty.library[key] = e;
+      added++;
+    });
+    Lampa.Storage.set('gsync_history_imported', true);
+    if (added) {
+      writeStore(LIB, prune(all));
+      scheduleFlush(500);
+      setTimeout(function () { refreshOpenCards(); decorateAll(); }, 0);
+      log('history imported', added);
+    }
   }
 
   function removeFromWatched(movie) {
@@ -903,12 +937,12 @@
 
   function openLibrary(filter) {
     var name = filter === 'watched' ? 'Просмотренное' : (FLAGS.filter(function (f) { return f.id === filter; })[0] || {}).title;
-    Lampa.Activity.push({ url: '', title: name === 'Просмотренное' ? 'Библиотека — Просмотренное' : name, component: 'gsync_library', filter: filter, page: 1, source: 'tmdb' });
+    Lampa.Activity.push({ url: '', title: filter === 'watched' ? 'Библиотека' : name, component: 'gsync_library', filter: filter, page: 1, source: 'tmdb' });
   }
 
   function chooseLibrary() {
     var enabled = Lampa.Controller.enabled().name;
-    var items = [{ title: 'Просмотренное', subtitle: libList('watched').length + ' шт.', filter: 'watched' }]
+    var items = [{ title: 'Библиотека (просмотренное)', subtitle: libList('watched').length + ' шт.', filter: 'watched' }]
       .concat(FLAGS.map(function (f) { return { title: f.title, subtitle: libList(f.id).length + ' шт.', filter: f.id }; }));
     Lampa.Select.show({
       title: 'Библиотека',
@@ -969,7 +1003,8 @@
     (function addMenu() {
       if (Lampa.Menu && Lampa.Menu.addButton) {
         try {
-          Lampa.Menu.addButton(LIB_ICON, 'Библиотека', chooseLibrary);
+          var libItem = Lampa.Menu.addButton(LIB_ICON, 'Библиотека', function () { openLibrary('watched'); });
+          if (libItem && libItem.on) libItem.on('hover:long', chooseLibrary);
           Lampa.Menu.addButton(WATCHING_ICON, 'Смотрю', function () { openLibrary('watching'); });
           Lampa.Menu.addButton(LATER_ICON, 'Позже', function () { openLibrary('later'); });
           return;
@@ -978,7 +1013,15 @@
       if (tries++ < 50) setTimeout(addMenu, 200);
     })();
 
-    // Что начали смотреть — в «Просмотренное»
+    // Что начали смотреть — в «Просмотренное»: Лампа сама добавляет фильм в историю при запуске
+    // (и со своим, и с внешним плеером); 'added' не берём — это подгрузка старой истории из CUB
+    try {
+      Lampa.Favorite.listener.follow('add', function (e) {
+        if (e && e.where === 'history' && e.card && e.card.id) markWatched(e.card);
+      });
+    } catch (e) {}
+    // Без аккаунта/синхронизации нужна история и без интернета — пусть будет импорт и без ключа
+    setTimeout(function () { if (!cfg) backfillHistory(); }, 15000);
     Lampa.Player.listener.follow('create', function (e) {
       var d = e && e.data;
       // только фильм/серия (у них есть таймкод), а не трейлер

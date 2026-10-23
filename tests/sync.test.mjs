@@ -21,8 +21,8 @@ async function fakeFetch(url, o) {
   const b = JSON.parse(o.body); for (const f in b.files) gh.gist.files[f] = b.files[f]; gh.ver++;
   return { status: 200, ok: true, headers: { get: k => k === 'ETag' ? tag() : null }, json: async () => JSON.parse(JSON.stringify(gh.gist)) };
 }
-function device(name, localTimeline, key) {
-  const store = { gsync_setup_done: true, gsync_key: key || 'g:t', file_view: localTimeline || {} }, L = {};
+function device(name, localTimeline, key, history) {
+  const store = { gsync_setup_done: true, gsync_history_imported: !history, __history: history, gsync_key: key || 'g:t', file_view: localTimeline || {} }, L = {};
   const jq = () => ({ removeClass: jq, find: jq, on: jq, after: jq, css: jq, length: 0, append: jq, remove: jq, prepend: jq, removeClass: jq, addClass: jq, data: jq, text: jq, replaceWith: jq });
   const ctx = {
     console, Promise, JSON, Object, Date, Math, setTimeout, clearTimeout, setInterval: () => 0, fetch: fakeFetch,
@@ -39,10 +39,11 @@ function device(name, localTimeline, key) {
     Listener: { follow: (n, fn) => { const prev = L['l_' + n]; L['l_' + n] = prev ? (e) => { prev(e); fn(e); } : fn; } }, Platform: { macOS: () => false }, Noty: { show: (m) => (store.noty = m) },
     Player: { listener: { follow() {} } }, Utils: { hash: x => x }, Activity: { active: () => ({ movie: { id: 7, source: 'cub' } }) },
     Torrent: { start: (el) => (store.started = el.MagnetUri) }, Controller: { toggle() {}, enabled: () => ({ name: 'content' }) },
-    Component: { add() {} }, Menu: { addButton() {} }, Select: { show() {} }, InteractionCategory: function () {}
+    Component: { add() {} }, Menu: { addButton() {} },
+    Favorite: { get: () => store.__history || [], listener: { follow: (ev, fn) => (L.fav = fn) } }, Select: { show() {} }, InteractionCategory: function () {}
   };
   vm.createContext(ctx);
-  vm.runInContext(code.replace("  if (window.appready) start();", "  globalThis.__t = { cycle: cycle, pins: pins, allLast: allLast, playPinned: playPinned, setFlag: setFlag, libList: libList, markWatched: markWatched };\n  if (window.appready) start();"), ctx);
+  vm.runInContext(code.replace("  if (window.appready) start();", "  globalThis.__t = { backfillHistory: backfillHistory, removeFromWatched: removeFromWatched, cycle: cycle, pins: pins, allLast: allLast, playPinned: playPinned, setFlag: setFlag, libList: libList, markWatched: markWatched };\n  if (window.appready) start();"), ctx);
   return { name, store, L, t: ctx.__t, Lampa: ctx.Lampa };
 }
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -165,4 +166,16 @@ const b1 = boot({ gsync_code_version: '99.0.0', gsync_code: 'window.__ran_new = 
 ok('21 newer cached version is started', b1.__ran_new === true && !b1.__lampa_gsync);
 const b2 = boot({ gsync_code_version: '0.0.1', gsync_code: 'window.__ran_new = true;' });
 ok('21b older cached version ignored', !b2.__ran_new && b2.__lampa_gsync === true);
+
+// 22: existing Lampa history imported once, order kept (newest first), synced to the other device
+const h = device('hist', {}, 'g:t', [{ id: 301, title: 'Newest' }, { id: 302, name: 'Middle', original_name: 'M' }, { id: 303, title: 'Oldest' }]);
+await wait(1500); await h.t.cycle({ final: true }); await mac.t.cycle({ force: true });
+const ids = mac.t.libList('watched').map(c => c.id).filter(id => id >= 300);
+ok('22 history imported, order kept, synced', JSON.stringify(ids) === '[301,302,303]');
+// 23: new history add puts film on top
+await wait(31000); h.L.fav({ where: 'history', card: { id: 303, title: 'Oldest' } }); await wait(700); await h.t.cycle({ final: true });
+ok('23 re-watched film moves to top', h.t.libList('watched')[0].id === 303);
+// 24: flags survive removal from watched, and stay out of history
+h.t.setFlag({ id: 302, name: 'Middle' }, 'later', true); h.t.removeFromWatched({ id: 302, name: 'Middle' });
+ok('24 flag kept after removing from history', h.t.libList('later')[0]?.id === 302 && !h.t.libList('watched').some(c => c.id === 302));
 process.exit(0);
