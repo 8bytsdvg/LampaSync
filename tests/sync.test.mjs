@@ -150,4 +150,19 @@ ok('19 flags synced, newest first', JSON.stringify(mac.t.libList('later').map(c 
 // 20: removing last flag removes entry everywhere
 mac.t.setFlag({ id: 102, title: 'B' }, 'later', false); await wait(700); await mac.t.cycle({ final: true }); await tv.t.cycle({ force: true });
 ok('20 unflag propagates', JSON.stringify(tv.t.libList('later').map(c => c.id)) === '[101]');
+
+// 21: self-update — newer cached code runs instead of the CDN copy; older is ignored
+function boot(ls) {
+  const ctx = { console, JSON, Date, Math, Object, Number, String, setTimeout, clearTimeout, setInterval: () => 0,
+    localStorage: { getItem: k => ls[k] ?? null, setItem: (k, v) => ls[k] = v } };
+  ctx.window = ctx; ctx.window.appready = false;
+  ctx.Lampa = { Listener: { follow() {} } };
+  vm.createContext(ctx);
+  vm.runInContext(code, ctx);
+  return ctx;
+}
+const b1 = boot({ gsync_code_version: '99.0.0', gsync_code: 'window.__ran_new = true;' });
+ok('21 newer cached version is started', b1.__ran_new === true && !b1.__lampa_gsync);
+const b2 = boot({ gsync_code_version: '0.0.1', gsync_code: 'window.__ran_new = true;' });
+ok('21b older cached version ignored', !b2.__ran_new && b2.__lampa_gsync === true);
 process.exit(0);

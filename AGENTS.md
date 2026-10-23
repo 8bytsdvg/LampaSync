@@ -11,7 +11,7 @@
 | `torrserver-menubar/` | Фоновый Swift-помощник macOS без значка: LaunchAgent `local.torrserver.menu` (KeepAlive, флаг `--background`); по `NSWorkspace` didLaunch/didTerminate включает TorrServer вместе с `~/Applications/Lampa.app` и выключает при её закрытии; перезапуск упавшего сервера (≤3 раз/мин); по SIGTERM останавливает сервер; при старте без Лампы убивает осиротевший сервер; повторное открытие `.app` — ручное вкл/выкл |
 | `tests/sync.test.mjs` | Симуляция двух устройств и GitHub API; `node tests/sync.test.mjs` |
 
-Плагин раздаётся через jsDelivr: `https://cdn.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js`. Лампа скачивает его при каждом запуске. После пуша в `main` сбросьте кэш jsDelivr, иначе обновление придёт с задержкой до 12 ч:
+Плагин раздаётся через jsDelivr: `https://cdn.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js`. jsDelivr кэширует ветку до 12 ч, поэтому плагин обновляет себя сам: раз в 6 ч (и по кнопке «Обновить») берёт `lampa-sync.js` с `raw.githubusercontent.com`; если `VERSION` новее — кладёт код в `localStorage` (`gsync_code`, `gsync_code_version`), и при следующем старте загрузчик в начале файла запускает его вместо копии с CDN (`window.__lampa_gsync_boot`). После пуша в `main` всё равно полезно сбросить кэш jsDelivr — для новых установок:
 ```
 curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 ```
@@ -28,7 +28,7 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 | `pins.json` | `id_<tmdb id>` | «Моя раздача»: `{title, Title, MagnetUri, Link, Tracker, size, updated}` или `{deleted: true, updated}` |
 | `last.json` | `id_<tmdb id>` | последняя запущенная раздача, тот же формат |
 | `settings.json` | имя настройки Лампы | `{value, updated}` (сейчас только `full_btn_priority`) |
-| `library.json` | `id_<tmdb id>` | «Моя библиотека»: `{card, watched: мс\|0, flags: {watching, later, planned, waiting, like, done, dropped: мс}, updated}` или `{deleted: true, updated}` |
+| `library.json` | `id_<tmdb id>` | «Библиотека»: `{card, watched: мс\|0, flags: {watching, later, planned, waiting, like, done, dropped: мс}, updated}` или `{deleted: true, updated}` |
 
 Старые ключи `tmdb_<id>` / `cub_<id>` нормализуются в `id_<id>` при чтении (`normPins`).
 
@@ -46,6 +46,8 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 - Файлы > 1 МБ GitHub обрезает (`truncated`) — дочитываются по `raw_url`.
 - Таймкоды во время просмотра пишутся не чаще раза в 30 с (`WRITE_GAP`); «Моя раздача», последняя раздача и настройки — сразу; после возврата в Лампу (15 с) и при её сворачивании — сразу (`urgentUntil`, `push({final})`).
 - Запросы сериализованы через `queue`.
+
+Производительность: хранилища плагина (`gsync_pins`, `gsync_last`, `gsync_library`) читаются из `localStorage` один раз и дальше живут в памяти (`readStore`/`writeStore`); метки на постерах перерисовываются только при изменении флагов (`el.__gsyncSig`); кнопки карточки обновляются на месте, а не пересоздаются (иначе теряется фокус пульта).
 
 Расписание: при старте; каждые 20 с, пока страница видима; при `visibilitychange`/`focus`; кнопка в шапке — принудительно без ETag.
 

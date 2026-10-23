@@ -12,9 +12,32 @@
  */
 (function () {
   'use strict';
+  var VERSION = '1.3.0';
+
+  function newerVersion(a, b) {
+    var x = String(a).split('.'), y = String(b).split('.');
+    for (var i = 0; i < 3; i++) {
+      var d = (Number(x[i]) || 0) - (Number(y[i]) || 0);
+      if (d) return d > 0;
+    }
+    return false;
+  }
+
+  // Самообновление: CDN может отдавать старую версию до 12 ч, поэтому новая версия,
+  // скачанная напрямую с GitHub, хранится локально и запускается вместо этой
+  if (!window.__lampa_gsync_boot) {
+    try {
+      var cachedVer = localStorage.getItem('gsync_code_version');
+      var cachedCode = cachedVer && newerVersion(cachedVer, VERSION) && localStorage.getItem('gsync_code');
+      if (cachedCode) {
+        window.__lampa_gsync_boot = true;
+        (0, eval)(cachedCode);
+        return;
+      }
+    } catch (e) {}
+  }
   if (window.__lampa_gsync) return;
   window.__lampa_gsync = true;
-  var VERSION = '1.2.1';
 
   var TAG = 'LampaSync';
   var MAX_ITEMS = 3000;
@@ -340,7 +363,7 @@
           reconcile(fresh);
         }
         if (!hasDirty()) return applied;
-        var onlyTimeline = !Object.keys(dirty.pins).length && !Object.keys(dirty.last).length && !dirty.settings;
+        var onlyTimeline = !Object.keys(dirty.pins).length && !Object.keys(dirty.last).length && !Object.keys(dirty.library).length && !dirty.settings;
         var wait = lastWrite + WRITE_GAP - Date.now();
         if (onlyTimeline && wait > 0 && !opts.force && !opts.final && Date.now() > urgentUntil) {
           scheduleFlush(wait + 100);
@@ -407,24 +430,29 @@
   var REPO_RAW = 'https://raw.githubusercontent.com/8bytsdvg/LampaSync/main/lampa-sync.js';
   var CDN_PURGE = 'https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js';
 
-  function newerVersion(a, b) {
-    var x = String(a).split('.'), y = String(b).split('.');
-    for (var i = 0; i < 3; i++) {
-      var d = (Number(x[i]) || 0) - (Number(y[i]) || 0);
-      if (d) return d > 0;
-    }
-    return false;
-  }
-
+  // Новая версия с GitHub: сохраняем её код локально (запустится при следующем старте Лампы)
+  // и заодно просим CDN сбросить кэш
   function checkPluginUpdate() {
+    try { localStorage.setItem('gsync_update_check', String(Date.now())); } catch (e) {}
     return fetch(REPO_RAW + '?t=' + Date.now(), { cache: 'no-store' }).then(function (r) {
       return r.ok ? r.text() : '';
     }).then(function (code) {
       var m = code.match(/var VERSION = '([0-9.]+)'/);
-      if (!m || !newerVersion(m[1], VERSION)) return null;
-      // сбросить кэш CDN, чтобы при перезагрузке скачалась новая версия
-      return fetch(CDN_PURGE, { mode: 'no-cors' }).catch(function () {}).then(function () { return m[1]; });
+      if (!m || !newerVersion(m[1], VERSION) || code.indexOf('__lampa_gsync') < 0) return null;
+      try {
+        localStorage.setItem('gsync_code', code);
+        localStorage.setItem('gsync_code_version', m[1]);
+      } catch (e) { log('cache code fail', e.message); }
+      fetch(CDN_PURGE, { mode: 'no-cors' }).catch(function () {});
+      return m[1];
     }).catch(function () { return null; });
+  }
+
+  // Тихая проверка обновлений раз в 6 часов
+  function autoUpdateCheck() {
+    var last = 0;
+    try { last = Number(localStorage.getItem('gsync_update_check')) || 0; } catch (e) {}
+    if (Date.now() - last > 6 * 3600 * 1000) setTimeout(checkPluginUpdate, 20000);
   }
 
   function refreshAll() {
@@ -513,6 +541,21 @@
     });
   }
 
+  // ---- Хранилища плагина с кэшем в памяти ----
+  var storeCache = {};
+  function readStore(key) {
+    if (!storeCache[key]) {
+      var p = Lampa.Storage.get(key, '{}');
+      if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { p = {}; } }
+      storeCache[key] = normPins(p || {});
+    }
+    return storeCache[key];
+  }
+  function writeStore(key, obj) {
+    storeCache[key] = obj;
+    Lampa.Storage.set(key, obj);
+  }
+
   // ---- «Моя раздача»: закреплённый торрент для карточки ----
   var PINS = 'gsync_pins';
   var pinLaunch = false;
@@ -535,11 +578,7 @@
   }
 
   // Все записи, включая удалённые ({deleted: true}) — они нужны, чтобы удаление дошло до другого устройства
-  function allPins() {
-    var p = Lampa.Storage.get(PINS, '{}');
-    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { p = {}; } }
-    return normPins(p);
-  }
+  function allPins() { return readStore(PINS); }
 
   function pins() {
     var all = allPins(), out = {};
@@ -548,7 +587,7 @@
   }
 
   function savePins(p, key) {
-    Lampa.Storage.set(PINS, p);
+    writeStore(PINS, p);
     if (key) { dirty.pins[key] = p[key]; scheduleFlush(500); }
   }
 
@@ -563,18 +602,14 @@
     Object.keys(local).forEach(function (k) {
       if (!remote[k] || (local[k].updated || 0) > (remote[k].updated || 0)) dirty.pins[k] = local[k];
     });
-    if (changed) { Lampa.Storage.set(PINS, local); log('pins applied', changed); refreshOpenCards(); }
+    if (changed) { writeStore(PINS, local); log('pins applied', changed); refreshOpenCards(); }
     return changed;
   }
 
   // ---- Последняя запущенная раздача у карточки (для «Продолжить» без «Моей раздачи») ----
   var LAST = 'gsync_last';
 
-  function allLast() {
-    var p = Lampa.Storage.get(LAST, '{}');
-    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { p = {}; } }
-    return normPins(p);
-  }
+  function allLast() { return readStore(LAST); }
 
   function rememberLast(movie, el) {
     var key = cardKey(movie);
@@ -587,7 +622,7 @@
       MagnetUri: el.MagnetUri || '', Link: el.Link || '', Tracker: el.Tracker || '', size: el.size || '',
       updated: Date.now()
     };
-    Lampa.Storage.set(LAST, prune(all));
+    writeStore(LAST, prune(all));
     dirty.last[key] = all[key];
     scheduleFlush(500);
     setTimeout(refreshOpenCards, 0);
@@ -600,7 +635,7 @@
       var r = remote[k];
       if (r && (r.updated || 0) > ((local[k] && local[k].updated) || 0)) { local[k] = r; changed++; }
     });
-    if (changed) { Lampa.Storage.set(LAST, local); refreshOpenCards(); }
+    if (changed) { writeStore(LAST, local); refreshOpenCards(); }
     return 0; // не считаем в «Обновлено: N»
   }
 
@@ -631,50 +666,57 @@
   function updateMainButtons(card, pin) {
     var main = card.body.find('.full-start-new__buttons');
     var play = main.find('.button--play');
-    var label = play.find('span');
-    label.text('Выбрать источник');
     if (!play.data('gsync-icon')) {
+      play.find('span').text('Выбрать источник');
       play.find('svg').replaceWith(SEARCH_ICON);
       play.data('gsync-icon', true);
     }
-    main.find('.gsync-continue, .gsync-later, .gsync-like, .gsync-lib').remove();
     var flags = libFlags(libEntry(card.movie));
-    var later = $('<div class="full-start__button selector gsync-later' + (flags.later ? ' gsync-on' : '') + '">' + LATER_ICON +
-      '<span>' + (flags.later ? 'В «Смотреть позже»' : 'Смотреть позже') + '</span></div>');
-    later.on('hover:enter', function () {
+    var bookBtn = main.find('.button--book');
+    function ensure(cls, html, onEnter) {
+      var b = main.find('.' + cls);
+      if (!b.length) {
+        b = $(html);
+        b.on('hover:enter', onEnter);
+        if (bookBtn.length) bookBtn.before(b); else main.append(b);
+      }
+      return b;
+    }
+    var later = ensure('gsync-later', '<div class="full-start__button selector gsync-later">' + LATER_ICON + '<span></span></div>', function () {
       var on = !libFlags(libEntry(card.movie)).later;
       setFlag(card.movie, 'later', on);
-      Lampa.Noty.show(on ? 'Добавлено в «Смотреть позже»' : 'Убрано из «Смотреть позже»');
+      Lampa.Noty.show(on ? 'Добавлено в «Позже»' : 'Убрано из «Позже»');
     });
-    var like = $('<div class="full-start__button selector gsync-like' + (flags.like ? ' gsync-on' : '') + '">' + LIKE_ICON + '</div>');
-    like.on('hover:enter', function () {
+    later.toggleClass('gsync-on', !!flags.later).find('span').text(flags.later ? 'В «Позже»' : 'Позже');
+    var like = ensure('gsync-like', '<div class="full-start__button selector gsync-like">' + LIKE_ICON + '</div>', function () {
       var on = !libFlags(libEntry(card.movie)).like;
       setFlag(card.movie, 'like', on);
       Lampa.Noty.show(on ? 'Нравится ♥' : 'Убрано из «Нравится»');
     });
-    var lib = $('<div class="full-start__button selector gsync-lib">' + LIB_ICON + '</div>');
-    lib.on('hover:enter', function () {
+    like.toggleClass('gsync-on', !!flags.like);
+    ensure('gsync-lib', '<div class="full-start__button selector gsync-lib">' + LIB_ICON + '</div>', function () {
       var enabled = Lampa.Controller.enabled().name;
       flagsMenu(card.movie, function () { Lampa.Controller.toggle(enabled); });
     });
-    var bookBtn = main.find('.button--book');
-    if (bookBtn.length) { bookBtn.before(later); bookBtn.before(like); bookBtn.before(lib); } else { main.append(later); main.append(like); main.append(lib); }
-    var target = pin || allLast()[cardKey(card.movie)];
-    if (!target) return;
-    var cont = $('<div class="full-start__button selector gsync-continue">' +
-      '<svg><use xlink:href="#sprite-play"></use></svg><span>Продолжить</span></div>');
-    cont.on('hover:enter', function () {
-      var t = pins()[cardKey(card.movie)] || allLast()[cardKey(card.movie)];
-      if (t) playPinned(t, card.movie);
-    });
-    main.prepend(cont);
+    var hasTarget = !!(pin || allLast()[cardKey(card.movie)]);
+    var cont = main.find('.gsync-continue');
+    if (hasTarget && !cont.length) {
+      cont = $('<div class="full-start__button selector gsync-continue"><svg><use xlink:href="#sprite-play"></use></svg><span>Продолжить</span></div>');
+      cont.on('hover:enter', function () {
+        var t = pins()[cardKey(card.movie)] || allLast()[cardKey(card.movie)];
+        if (t) playPinned(t, card.movie);
+      });
+      main.prepend(cont);
+    } else if (!hasTarget && cont.length) cont.remove();
   }
 
   function refreshCard(card) {
     if (!card.body || !document.body.contains(card.body[0])) return;
     var pin = pins()[cardKey(card.movie)];
-    card.body.find('.view--gsync-pin').remove();
     updateMainButtons(card, pin);
+    var existing = card.body.find('.buttons--container .view--gsync-pin');
+    if (existing.length && pin) { existing.data('subtitle', pin.title || pin.Title || ''); return; }
+    existing.remove();
     if (!pin) return;
     var btn = pinButton();
     btn.data('subtitle', pin.title || pin.Title || '');
@@ -706,14 +748,14 @@
   }
 
 
-  // ---- Моя библиотека: просмотренное + флаги ----
+  // ---- Библиотека: просмотренное + флаги ----
   // Запись: { card: {...}, watched: <мс, когда смотрели> | 0, flags: { later: <мс>, ... }, updated }
   var LIB = 'gsync_library';
   var FLAGS = [
     { id: 'watching', title: 'Смотрю', color: '#3d8bfd' },
-    { id: 'later', title: 'Смотреть позже', color: '#e6b422' },
+    { id: 'later', title: 'Позже', color: '#e6b422' },
     { id: 'planned', title: 'Запланировано', color: '#20c997' },
-    { id: 'waiting', title: 'Жду продолжение', color: '#a66bff' },
+    { id: 'waiting', title: 'Жду продолжение', short: 'Жду', color: '#a66bff' },
     { id: 'like', title: 'Нравится', color: '#ff6b81' },
     { id: 'done', title: 'Просмотрено', color: '#8bc34a' },
     { id: 'dropped', title: 'Брошено', color: '#9e9e9e' }
@@ -723,11 +765,7 @@
   var LIKE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10z"/></svg>';
   var LATER_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
 
-  function allLib() {
-    var p = Lampa.Storage.get(LIB, '{}');
-    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { p = {}; } }
-    return normPins(p);
-  }
+  function allLib() { return readStore(LIB); }
 
   function libEntry(movie) { return allLib()[cardKey(movie)] || null; }
 
@@ -746,7 +784,7 @@
   function saveLib(key, entry) {
     var all = allLib();
     all[key] = entry;
-    Lampa.Storage.set(LIB, prune(all));
+    writeStore(LIB, prune(all));
     dirty.library[key] = entry;
     scheduleFlush(500);
     setTimeout(function () { refreshOpenCards(); decorateAll(); }, 0);
@@ -795,7 +833,7 @@
       var r = remote[k];
       if (r && (r.updated || 0) > ((local[k] && local[k].updated) || 0)) { local[k] = r; changed++; }
     });
-    if (changed) { Lampa.Storage.set(LIB, local); refreshOpenCards(); decorateAll(); }
+    if (changed) { writeStore(LIB, local); refreshOpenCards(); decorateAll(); }
     return changed;
   }
 
@@ -820,7 +858,7 @@
     });
     if (e && !e.deleted && e.watched) items.push({ title: 'Убрать из «Просмотренного»', unwatch: true });
     Lampa.Select.show({
-      title: 'Моя библиотека',
+      title: 'Библиотека',
       items: items,
       onCheck: function (a) { setFlag(movie, a.flag, !libFlags(libEntry(movie))[a.flag]); },
       onSelect: function (a) {
@@ -862,7 +900,7 @@
 
   function openLibrary(filter) {
     var name = filter === 'watched' ? 'Просмотренное' : (FLAGS.filter(function (f) { return f.id === filter; })[0] || {}).title;
-    Lampa.Activity.push({ url: '', title: 'Моя библиотека — ' + name, component: 'gsync_library', filter: filter, page: 1, source: 'tmdb' });
+    Lampa.Activity.push({ url: '', title: name === 'Просмотренное' ? 'Библиотека — Просмотренное' : name, component: 'gsync_library', filter: filter, page: 1, source: 'tmdb' });
   }
 
   function chooseLibrary() {
@@ -870,29 +908,33 @@
     var items = [{ title: 'Просмотренное', subtitle: libList('watched').length + ' шт.', filter: 'watched' }]
       .concat(FLAGS.map(function (f) { return { title: f.title, subtitle: libList(f.id).length + ' шт.', filter: f.id }; }));
     Lampa.Select.show({
-      title: 'Моя библиотека',
+      title: 'Библиотека',
       items: items,
       onSelect: function (a) { openLibrary(a.filter); },
       onBack: function () { Lampa.Controller.toggle(enabled); }
     });
   }
 
-  // Метки флагов на постерах
+  // Метки флагов на постерах (перерисовываются только при изменении флагов)
   var decorateQueued = false;
-  function decorate(el) {
+  function decorate(el, lib) {
     var data = el.card_data;
+    if (!data || !data.id) return;
+    var e = lib[cardKey(data)];
+    var flags = libFlags(e);
+    var sig = FLAGS.filter(function (f) { return flags[f.id]; }).map(function (f) { return f.id; }).join(',');
+    if (el.__gsyncSig === sig) return;
     var view = el.querySelector && el.querySelector('.card__view');
-    if (!data || !data.id || !view) return;
+    if (!view) return;
+    el.__gsyncSig = sig;
     var old = view.querySelector('.gsync-flags');
     if (old) old.remove();
-    var flags = libFlags(libEntry(data));
-    var shown = FLAGS.filter(function (f) { return flags[f.id] && f.id !== 'like'; });
-    if (!shown.length && !flags.like) return;
+    if (!sig) return;
     var box = document.createElement('div');
     box.className = 'gsync-flags';
-    shown.slice(0, 2).forEach(function (f) {
+    FLAGS.filter(function (f) { return flags[f.id] && f.id !== 'like'; }).slice(0, 2).forEach(function (f) {
       var s = document.createElement('span');
-      s.textContent = f.title;
+      s.textContent = f.short || f.title;
       s.style.background = f.color;
       box.appendChild(s);
     });
@@ -910,9 +952,10 @@
     decorateQueued = true;
     setTimeout(function () {
       decorateQueued = false;
+      var lib = allLib();
       var list = document.querySelectorAll('.card');
-      for (var i = 0; i < list.length; i++) decorate(list[i]);
-    }, 80);
+      for (var i = 0; i < list.length; i++) decorate(list[i], lib);
+    }, 120);
   }
 
   function setupLibrary() {
@@ -923,8 +966,9 @@
     (function addMenu() {
       if (Lampa.Menu && Lampa.Menu.addButton) {
         try {
-          Lampa.Menu.addButton(LIB_ICON, 'Моя библиотека', chooseLibrary);
+          Lampa.Menu.addButton(LIB_ICON, 'Библиотека', chooseLibrary);
           Lampa.Menu.addButton(WATCHING_ICON, 'Смотрю', function () { openLibrary('watching'); });
+          Lampa.Menu.addButton(LATER_ICON, 'Позже', function () { openLibrary('later'); });
           return;
         } catch (e) {}
       }
@@ -934,7 +978,9 @@
     // Что начали смотреть — в «Просмотренное»
     Lampa.Player.listener.follow('create', function (e) {
       var d = e && e.data;
-      var movie = (d && d.card) || activeMovie();
+      // только фильм/серия (у них есть таймкод), а не трейлер
+      if (!d || !(d.timeline || d.torrent_hash)) return;
+      var movie = d.card || activeMovie();
       if (movie && movie.id) markWatched(movie);
     });
     Lampa.Listener.follow('torrent', function (e) {
@@ -953,7 +999,7 @@
       }).observe(document.body, { childList: true, subtree: true });
     } catch (e) {}
 
-    // Долгое нажатие на постер: пункт «Моя библиотека» первым в меню «Действие»
+    // Долгое нажатие на постер: пункт «Библиотека» первым в меню «Действие»
     var lastCard = null, lastAt = 0;
     document.addEventListener('hover:long', function (e) {
       var el = e.target;
@@ -968,8 +1014,8 @@
           var movie = lastCard, enabled = Lampa.Controller.enabled().name;
           var current = FLAGS.filter(function (f) { return libFlags(libEntry(movie))[f.id]; }).map(function (f) { return f.title; }).join(', ');
           params.items = [{
-            title: 'Моя библиотека…',
-            subtitle: current || 'Смотреть позже, Запланировано, Жду продолжение…',
+            title: 'Библиотека…',
+            subtitle: current || 'Позже, Запланировано, Жду продолжение, Нравится…',
             onSelect: function () {
               setTimeout(function () { flagsMenu(movie, function () { Lampa.Controller.toggle(enabled); }); }, 50);
             }
@@ -1221,6 +1267,7 @@
     Lampa.Timeline.listener.follow('update', onUpdate);
     setupIina();
     connect(false);
+    autoUpdateCheck();
     // Пока Лампа на экране — проверка каждые 20 с (условный запрос: без изменений это почти бесплатно).
     // На Маке время из IINA читается из TorrServer каждые 10 с, даже в фоне.
     var ticks = 0;
