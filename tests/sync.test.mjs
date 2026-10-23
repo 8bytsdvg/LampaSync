@@ -28,7 +28,8 @@ function device(name, localTimeline, key) {
     console, Promise, JSON, Object, Date, Math, setTimeout, clearTimeout, setInterval: () => 0, fetch: fakeFetch,
     $: Object.assign(jq, { _data: () => ({}) }),
     localStorage: { getItem: k => store['ls_' + k] ?? null, setItem: (k, v) => store['ls_' + k] = v },
-    document: { hidden: false, addEventListener() {}, body: { contains: () => false } },
+    document: { hidden: false, addEventListener() {}, querySelectorAll: () => [], body: { contains: () => false } },
+    MutationObserver: function () { this.observe = () => {}; },
   };
   ctx.window = { appready: true, addEventListener() {}, encodeURIComponent };
   const view = h => store.file_view[h] || {};
@@ -37,10 +38,11 @@ function device(name, localTimeline, key) {
     Timeline: { filename: () => 'file_view', view, update: p => { store.file_view[p.hash] = { ...p, updated: p.updated || Date.now() }; L.tl?.({ data: { hash: p.hash, road: store.file_view[p.hash] } }); }, listener: { follow: (ev, fn) => L.tl = fn } },
     Listener: { follow: (n, fn) => { const prev = L['l_' + n]; L['l_' + n] = prev ? (e) => { prev(e); fn(e); } : fn; } }, Platform: { macOS: () => false }, Noty: { show: (m) => (store.noty = m) },
     Player: { listener: { follow() {} } }, Utils: { hash: x => x }, Activity: { active: () => ({ movie: { id: 7, source: 'cub' } }) },
-    Torrent: { start: (el) => (store.started = el.MagnetUri) }, Controller: { toggle() {} }
+    Torrent: { start: (el) => (store.started = el.MagnetUri) }, Controller: { toggle() {}, enabled: () => ({ name: 'content' }) },
+    Component: { add() {} }, Menu: { addButton() {} }, Select: { show() {} }, InteractionCategory: function () {}
   };
   vm.createContext(ctx);
-  vm.runInContext(code.replace("  if (window.appready) start();", "  globalThis.__t = { cycle: cycle, pins: pins, allLast: allLast, playPinned: playPinned };\n  if (window.appready) start();"), ctx);
+  vm.runInContext(code.replace("  if (window.appready) start();", "  globalThis.__t = { cycle: cycle, pins: pins, allLast: allLast, playPinned: playPinned, setFlag: setFlag, libList: libList, markWatched: markWatched };\n  if (window.appready) start();"), ctx);
   return { name, store, L, t: ctx.__t, Lampa: ctx.Lampa };
 }
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -138,4 +140,14 @@ gh.list = []; gh.calls = [];
 const nf = device('new', {}, 'tok2');
 await wait(1500);
 ok('18 token-only creates secret gist once', nf.store.gsync_key === 'g:tok2' && gh.calls.filter(c => c === 'CREATE').length === 1);
+
+// 19: flags sync between devices, sorted newest first
+tv.t.setFlag({ id: 101, title: 'A' }, 'later', true); await wait(30);
+tv.t.setFlag({ id: 102, title: 'B' }, 'later', true); await wait(30);
+tv.t.setFlag({ id: 101, title: 'A' }, 'like', true); tv.t.markWatched({ id: 103, title: 'C' });
+await wait(700); await tv.t.cycle({ final: true }); await mac.t.cycle({ force: true });
+ok('19 flags synced, newest first', JSON.stringify(mac.t.libList('later').map(c => c.id)) === '[102,101]' && mac.t.libList('like')[0]?.id === 101 && mac.t.libList('watched')[0]?.id === 103);
+// 20: removing last flag removes entry everywhere
+mac.t.setFlag({ id: 102, title: 'B' }, 'later', false); await wait(700); await mac.t.cycle({ final: true }); await tv.t.cycle({ force: true });
+ok('20 unflag propagates', JSON.stringify(tv.t.libList('later').map(c => c.id)) === '[101]');
 process.exit(0);

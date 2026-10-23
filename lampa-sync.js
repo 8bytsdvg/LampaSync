@@ -14,7 +14,7 @@
   'use strict';
   if (window.__lampa_gsync) return;
   window.__lampa_gsync = true;
-  var VERSION = '1.1.1';
+  var VERSION = '1.2.0';
 
   var TAG = 'LampaSync';
   var MAX_ITEMS = 3000;
@@ -242,8 +242,8 @@
   // ---- Единый цикл синхронизации ----
   // Один запрос на чтение (условный) и, если есть что отправить, одна запись сразу всех файлов.
   // Синхронизируемые словари (ключ → запись с полем updated) и их файлы в Gist
-  var MAPS = { timeline: 'timeline.json', pins: 'pins.json', last: 'last.json' };
-  function emptyDirty() { return { timeline: {}, pins: {}, last: {}, settings: false }; }
+  var MAPS = { timeline: 'timeline.json', pins: 'pins.json', last: 'last.json', library: 'library.json' };
+  function emptyDirty() { return { timeline: {}, pins: {}, last: {}, library: {}, settings: false }; }
   var dirty = emptyDirty();
   var flushTimer = null;
   var queue = Promise.resolve();
@@ -309,6 +309,10 @@
     Object.keys(localLast).forEach(function (k) {
       if (!remoteLast[k] || (localLast[k].updated || 0) > (remoteLast[k].updated || 0)) dirty.last[k] = localLast[k];
     });
+    var remoteLib = normPins(fileJson(gist, 'library.json') || {}), localLib = allLib();
+    Object.keys(localLib).forEach(function (k) {
+      if (!remoteLib[k] || (localLib[k].updated || 0) > (remoteLib[k].updated || 0)) dirty.library[k] = localLib[k];
+    });
     var remoteSet = fileJson(gist, 'settings.json') || {}, m = settingsMeta();
     SYNC_SETTINGS.forEach(function (name) {
       if (m[name] && m[name] > ((remoteSet[name] && remoteSet[name].updated) || 0)) dirty.settings = true;
@@ -331,6 +335,7 @@
           applied = lastApplied;
           applied += applyPins(fileJson(fresh, 'pins.json') || {});
           applied += applyLast(fileJson(fresh, 'last.json') || {});
+          applied += applyLibrary(fileJson(fresh, 'library.json') || {});
           applied += applySettings(fileJson(fresh, 'settings.json') || {});
           reconcile(fresh);
         }
@@ -632,7 +637,28 @@
       play.find('svg').replaceWith(SEARCH_ICON);
       play.data('gsync-icon', true);
     }
-    main.find('.gsync-continue').remove();
+    main.find('.gsync-continue, .gsync-later, .gsync-like, .gsync-lib').remove();
+    var flags = libFlags(libEntry(card.movie));
+    var later = $('<div class="full-start__button selector gsync-later' + (flags.later ? ' gsync-on' : '') + '">' + LATER_ICON +
+      '<span>' + (flags.later ? 'В «Смотреть позже»' : 'Смотреть позже') + '</span></div>');
+    later.on('hover:enter', function () {
+      var on = !libFlags(libEntry(card.movie)).later;
+      setFlag(card.movie, 'later', on);
+      Lampa.Noty.show(on ? 'Добавлено в «Смотреть позже»' : 'Убрано из «Смотреть позже»');
+    });
+    var like = $('<div class="full-start__button selector gsync-like' + (flags.like ? ' gsync-on' : '') + '">' + LIKE_ICON + '</div>');
+    like.on('hover:enter', function () {
+      var on = !libFlags(libEntry(card.movie)).like;
+      setFlag(card.movie, 'like', on);
+      Lampa.Noty.show(on ? 'Нравится ♥' : 'Убрано из «Нравится»');
+    });
+    var lib = $('<div class="full-start__button selector gsync-lib">' + LIB_ICON + '</div>');
+    lib.on('hover:enter', function () {
+      var enabled = Lampa.Controller.enabled().name;
+      flagsMenu(card.movie, function () { Lampa.Controller.toggle(enabled); });
+    });
+    var bookBtn = main.find('.button--book');
+    if (bookBtn.length) { bookBtn.before(later); bookBtn.before(like); bookBtn.before(lib); } else { main.append(later); main.append(like); main.append(lib); }
     var target = pin || allLast()[cardKey(card.movie)];
     if (!target) return;
     var cont = $('<div class="full-start__button selector gsync-continue">' +
@@ -677,6 +703,281 @@
     Object.keys(pin).forEach(function (k) { element[k] = pin[k]; });
     element.poster = movie.img || element.poster;
     Lampa.Torrent.start(element, movie);
+  }
+
+
+  // ---- Моя библиотека: просмотренное + флаги ----
+  // Запись: { card: {...}, watched: <мс, когда смотрели> | 0, flags: { later: <мс>, ... }, updated }
+  var LIB = 'gsync_library';
+  var FLAGS = [
+    { id: 'watching', title: 'Смотрю', color: '#3d8bfd' },
+    { id: 'later', title: 'Смотреть позже', color: '#e6b422' },
+    { id: 'planned', title: 'Запланировано', color: '#20c997' },
+    { id: 'waiting', title: 'Жду продолжение', color: '#a66bff' },
+    { id: 'like', title: 'Нравится', color: '#ff6b81' },
+    { id: 'done', title: 'Просмотрено', color: '#8bc34a' },
+    { id: 'dropped', title: 'Брошено', color: '#9e9e9e' }
+  ];
+  var LIB_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 4h4v16H4zM10 4h4v16h-4z"/><path d="M16.5 4.5l3.8 1-3.6 14.5-3.8-1z"/></svg>';
+  var WATCHING_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><rect x="3" y="5" width="18" height="13" rx="2"/><path d="M10 9l5 2.5-5 2.5z" fill="currentColor"/><path d="M8 21h8" stroke-linecap="round"/></svg>';
+  var LIKE_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round"><path d="M12 20s-7-4.5-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 10c0 5.5-7 10-7 10z"/></svg>';
+  var LATER_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
+
+  function allLib() {
+    var p = Lampa.Storage.get(LIB, '{}');
+    if (typeof p === 'string') { try { p = JSON.parse(p); } catch (e) { p = {}; } }
+    return normPins(p);
+  }
+
+  function libEntry(movie) { return allLib()[cardKey(movie)] || null; }
+
+  function slimCard(movie) {
+    var c;
+    try { c = Lampa.Utils.clearCard(movie); } catch (e) { c = {}; }
+    ['id', 'title', 'name', 'original_title', 'original_name', 'poster_path', 'backdrop_path',
+      'release_date', 'first_air_date', 'vote_average', 'source', 'img'].forEach(function (f) {
+      if (movie[f] !== undefined && c[f] === undefined) c[f] = movie[f];
+    });
+    if (!c.source) c.source = 'tmdb';
+    return c;
+  }
+
+  function saveLib(key, entry) {
+    var all = allLib();
+    all[key] = entry;
+    Lampa.Storage.set(LIB, prune(all));
+    dirty.library[key] = entry;
+    scheduleFlush(500);
+    setTimeout(function () { refreshOpenCards(); decorateAll(); }, 0);
+  }
+
+  function libFlags(e) { return (e && !e.deleted && e.flags) || {}; }
+
+  function setFlag(movie, flag, on) {
+    var key = cardKey(movie);
+    if (!key) return;
+    var e = libEntry(movie);
+    e = e && !e.deleted ? JSON.parse(JSON.stringify(e)) : { watched: 0, flags: {} };
+    e.card = slimCard(movie);
+    e.flags = e.flags || {};
+    if (on) e.flags[flag] = Date.now(); else delete e.flags[flag];
+    e.updated = Date.now();
+    if (!e.watched && !Object.keys(e.flags).length) e = { deleted: true, updated: e.updated };
+    saveLib(key, e);
+  }
+
+  function markWatched(movie) {
+    var key = cardKey(movie);
+    if (!key || !(movie.title || movie.name)) return;
+    var e = libEntry(movie);
+    if (e && !e.deleted && Date.now() - (e.watched || 0) < 10 * 60 * 1000) return;
+    e = e && !e.deleted ? JSON.parse(JSON.stringify(e)) : { flags: {} };
+    e.card = slimCard(movie);
+    e.watched = Date.now();
+    e.updated = Date.now();
+    saveLib(key, e);
+  }
+
+  function removeFromWatched(movie) {
+    var key = cardKey(movie), e = libEntry(movie);
+    if (!e || e.deleted) return;
+    e = JSON.parse(JSON.stringify(e));
+    e.watched = 0;
+    e.updated = Date.now();
+    saveLib(key, Object.keys(e.flags || {}).length ? e : { deleted: true, updated: e.updated });
+  }
+
+  function applyLibrary(remote) {
+    remote = normPins(remote);
+    var local = allLib(), changed = 0;
+    Object.keys(remote).forEach(function (k) {
+      var r = remote[k];
+      if (r && (r.updated || 0) > ((local[k] && local[k].updated) || 0)) { local[k] = r; changed++; }
+    });
+    if (changed) { Lampa.Storage.set(LIB, local); refreshOpenCards(); decorateAll(); }
+    return changed;
+  }
+
+  // Списки: 'watched' — то, что смотрели; иначе id флага. От свежего к старому
+  function libList(filter) {
+    var all = allLib(), out = [];
+    Object.keys(all).forEach(function (k) {
+      var e = all[k];
+      if (!e || e.deleted || !e.card) return;
+      var t = filter === 'watched' ? e.watched : (e.flags || {})[filter];
+      if (t) out.push({ card: e.card, t: t });
+    });
+    out.sort(function (a, b) { return b.t - a.t; });
+    return out.map(function (x) { return x.card; });
+  }
+
+  // Меню флагов фильма (галочки, можно несколько)
+  function flagsMenu(movie, back) {
+    var e = libEntry(movie), flags = libFlags(e);
+    var items = FLAGS.map(function (f) {
+      return { title: f.title, flag: f.id, checkbox: true, checked: !!flags[f.id] };
+    });
+    if (e && !e.deleted && e.watched) items.push({ title: 'Убрать из «Просмотренного»', unwatch: true });
+    Lampa.Select.show({
+      title: 'Моя библиотека',
+      items: items,
+      onCheck: function (a) { setFlag(movie, a.flag, !libFlags(libEntry(movie))[a.flag]); },
+      onSelect: function (a) {
+        if (a.unwatch) removeFromWatched(movie);
+        else if (a.flag) setFlag(movie, a.flag, !libFlags(libEntry(movie))[a.flag]);
+        back();
+      },
+      onBack: back
+    });
+  }
+
+  // Экран категории библиотеки — стандартная сетка карточек Лампы
+  function LibraryComponent(object) {
+    var comp = new Lampa.InteractionCategory(object);
+    var cards = libList(object.filter || 'watched');
+    var PAGE = 60;
+    comp.create = function () {
+      if (!cards.length) return this.empty();
+      this.build({ results: cards.slice(0, PAGE), total_pages: Math.ceil(cards.length / PAGE), page: 1 });
+    };
+    comp.nextPageReuest = function (obj, resolve, reject) {
+      var part = cards.slice((obj.page - 1) * PAGE, obj.page * PAGE);
+      if (part.length) resolve({ results: part, total_pages: Math.ceil(cards.length / PAGE), page: obj.page }); else reject();
+    };
+    var origEmpty = comp.empty;
+    comp.empty = function () {
+      origEmpty.call(this);
+      try {
+        var r = $(this.render(true));
+        r.find('.empty__title').text('Здесь пока пусто');
+        r.find('.empty__descr').text(object.filter === 'watched'
+          ? 'Сюда попадает всё, что вы начали смотреть'
+          : 'Отметьте фильм: кнопка с книжками на странице фильма или долгое нажатие на постер');
+        r.find('.empty__footer').remove();
+      } catch (e) {}
+    };
+    return comp;
+  }
+
+  function openLibrary(filter) {
+    var name = filter === 'watched' ? 'Просмотренное' : (FLAGS.filter(function (f) { return f.id === filter; })[0] || {}).title;
+    Lampa.Activity.push({ url: '', title: 'Моя библиотека — ' + name, component: 'gsync_library', filter: filter, page: 1, source: 'tmdb' });
+  }
+
+  function chooseLibrary() {
+    var enabled = Lampa.Controller.enabled().name;
+    var items = [{ title: 'Просмотренное', subtitle: libList('watched').length + ' шт.', filter: 'watched' }]
+      .concat(FLAGS.map(function (f) { return { title: f.title, subtitle: libList(f.id).length + ' шт.', filter: f.id }; }));
+    Lampa.Select.show({
+      title: 'Моя библиотека',
+      items: items,
+      onSelect: function (a) { openLibrary(a.filter); },
+      onBack: function () { Lampa.Controller.toggle(enabled); }
+    });
+  }
+
+  // Метки флагов на постерах
+  var decorateQueued = false;
+  function decorate(el) {
+    var data = el.card_data;
+    var view = el.querySelector && el.querySelector('.card__view');
+    if (!data || !data.id || !view) return;
+    var old = view.querySelector('.gsync-flags');
+    if (old) old.remove();
+    var flags = libFlags(libEntry(data));
+    var shown = FLAGS.filter(function (f) { return flags[f.id] && f.id !== 'like'; });
+    if (!shown.length && !flags.like) return;
+    var box = document.createElement('div');
+    box.className = 'gsync-flags';
+    shown.slice(0, 2).forEach(function (f) {
+      var s = document.createElement('span');
+      s.textContent = f.title;
+      s.style.background = f.color;
+      box.appendChild(s);
+    });
+    if (flags.like) {
+      var h = document.createElement('span');
+      h.textContent = '♥';
+      h.style.background = '#ff6b81';
+      box.appendChild(h);
+    }
+    view.appendChild(box);
+  }
+
+  function decorateAll() {
+    if (decorateQueued) return;
+    decorateQueued = true;
+    setTimeout(function () {
+      decorateQueued = false;
+      var list = document.querySelectorAll('.card');
+      for (var i = 0; i < list.length; i++) decorate(list[i]);
+    }, 80);
+  }
+
+  function setupLibrary() {
+    Lampa.Component.add('gsync_library', LibraryComponent);
+
+    // Пункт в боковом меню
+    var tries = 0;
+    (function addMenu() {
+      if (Lampa.Menu && Lampa.Menu.addButton) {
+        try {
+          Lampa.Menu.addButton(LIB_ICON, 'Моя библиотека', chooseLibrary);
+          Lampa.Menu.addButton(WATCHING_ICON, 'Смотрю', function () { openLibrary('watching'); });
+          return;
+        } catch (e) {}
+      }
+      if (tries++ < 50) setTimeout(addMenu, 200);
+    })();
+
+    // Что начали смотреть — в «Просмотренное»
+    Lampa.Player.listener.follow('create', function (e) {
+      var d = e && e.data;
+      var movie = (d && d.card) || activeMovie();
+      if (movie && movie.id) markWatched(movie);
+    });
+    Lampa.Listener.follow('torrent', function (e) {
+      if (e.type === 'onenter') { var m = activeMovie(); if (m) markWatched(m); }
+    });
+
+    // Метки на новых постерах
+    try {
+      new MutationObserver(function (muts) {
+        for (var i = 0; i < muts.length; i++) {
+          var n = muts[i].addedNodes;
+          for (var j = 0; j < n.length; j++) {
+            if (n[j].nodeType === 1 && !(n[j].classList && n[j].classList.contains('gsync-flags'))) { decorateAll(); return; }
+          }
+        }
+      }).observe(document.body, { childList: true, subtree: true });
+    } catch (e) {}
+
+    // Долгое нажатие на постер: пункт «Моя библиотека» первым в меню «Действие»
+    var lastCard = null, lastAt = 0;
+    document.addEventListener('hover:long', function (e) {
+      var el = e.target;
+      while (el && !el.card_data) el = el.parentNode;
+      if (el && el.card_data) { lastCard = el.card_data; lastAt = Date.now(); }
+    }, true);
+    var origShow = Lampa.Select.show;
+    Lampa.Select.show = function (params) {
+      try {
+        var isCardMenu = params && params.items && params.items.some(function (i) { return i.where === 'book' || i.where === 'like'; });
+        if (isCardMenu && lastCard && Date.now() - lastAt < 2000) {
+          var movie = lastCard, enabled = Lampa.Controller.enabled().name;
+          var current = FLAGS.filter(function (f) { return libFlags(libEntry(movie))[f.id]; }).map(function (f) { return f.title; }).join(', ');
+          params.items = [{
+            title: 'Моя библиотека…',
+            subtitle: current || 'Смотреть позже, Запланировано, Жду продолжение…',
+            onSelect: function () {
+              setTimeout(function () { flagsMenu(movie, function () { Lampa.Controller.toggle(enabled); }); }, 50);
+            }
+          }].concat(params.items);
+          lastCard = null;
+        }
+      } catch (err) { log('menu hook fail', err.message); }
+      return origShow.apply(this, arguments);
+    };
   }
 
   function setupPins() {
@@ -889,7 +1190,10 @@
   }
 
   function addStyles() {
-    $('head').append('<style>.gsync-pinned{box-shadow:inset 0 0 0 0.2em #e6b422;border-radius:0.6em}' +
+    $('head').append('<style>.gsync-flags{position:absolute;left:0.4em;bottom:0.4em;display:flex;gap:0.25em;flex-wrap:wrap;z-index:2;pointer-events:none}' +
+      '.gsync-flags span{color:#fff;font-size:0.75em;font-weight:600;padding:0.15em 0.45em;border-radius:0.35em;box-shadow:0 0.1em 0.3em rgba(0,0,0,.4)}' +
+      '.gsync-later.gsync-on svg{color:#e6b422}.gsync-like.gsync-on svg{color:#ff6b81;fill:#ff6b81}' +
+      '.gsync-pinned{box-shadow:inset 0 0 0 0.2em #e6b422;border-radius:0.6em}' +
       '.gsync-pin-badge{display:inline-flex;align-items:center;gap:0.3em;color:#e6b422;font-weight:600;margin-right:0.4em}' +
       '.gsync-pin-badge svg{width:1em;height:1em}</style>');
   }
@@ -909,6 +1213,7 @@
     addStyles();
     setupSettingsSync();
     setupPins();
+    try { setupLibrary(); } catch (e) { log('library setup fail', e.message); }
     addSettings();
     addHeadButton();
     offerSetup();
