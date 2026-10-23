@@ -22,7 +22,7 @@ async function fakeFetch(url, o) {
   return { status: 200, ok: true, headers: { get: k => k === 'ETag' ? tag() : null }, json: async () => JSON.parse(JSON.stringify(gh.gist)) };
 }
 function device(name, localTimeline, key, history) {
-  const store = { gsync_setup_done: true, gsync_history_imported: !history, __history: history, gsync_key: key || 'g:t', file_view: localTimeline || {} }, L = {};
+  const store = { gsync_setup_done: true, __history: history || [], gsync_key: key || 'g:t', file_view: localTimeline || {} }, L = {};
   const jq = () => ({ removeClass: jq, find: jq, on: jq, after: jq, css: jq, length: 0, append: jq, remove: jq, prepend: jq, removeClass: jq, addClass: jq, data: jq, text: jq, replaceWith: jq });
   const ctx = {
     console, Promise, JSON, Object, Date, Math, setTimeout, clearTimeout, setInterval: () => 0, fetch: fakeFetch,
@@ -178,4 +178,17 @@ ok('23 re-watched film moves to top', h.t.libList('watched')[0].id === 303);
 // 24: flags survive removal from watched, and stay out of history
 h.t.setFlag({ id: 302, name: 'Middle' }, 'later', true); h.t.removeFromWatched({ id: 302, name: 'Middle' });
 ok('24 flag kept after removing from history', h.t.libList('later')[0]?.id === 302 && !h.t.libList('watched').some(c => c.id === 302));
+
+// 25: CUB history arrives late (after start) — still imported on favorite update
+const late = device('late', {}, 'g:t', []);
+await wait(1500);
+late.store.__history = [{ id: 401, title: 'FromCub' }];
+late.L['l_state:changed']({ target: 'favorite', reason: 'update' });
+await wait(3500); await late.t.cycle({ final: true }); await mac.t.cycle({ force: true });
+ok('25 late CUB history imported and synced', mac.t.libList('watched').some(c => c.id === 401));
+// 26: film removed from library is not re-imported from history
+late.t.removeFromWatched({ id: 401, title: 'FromCub' });
+late.L['l_state:changed']({ target: 'favorite', reason: 'update' });
+await wait(3500);
+ok('26 removed film stays removed', !late.t.libList('watched').some(c => c.id === 401));
 process.exit(0);

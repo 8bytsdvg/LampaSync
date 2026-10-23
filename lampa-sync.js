@@ -12,7 +12,7 @@
  */
 (function () {
   'use strict';
-  var VERSION = '1.4.0';
+  var VERSION = '1.4.2';
 
   function newerVersion(a, b) {
     var x = String(a).split('.'), y = String(b).split('.');
@@ -361,7 +361,7 @@
           applied += applyLibrary(fileJson(fresh, 'library.json') || {});
           applied += applySettings(fileJson(fresh, 'settings.json') || {});
           reconcile(fresh);
-          backfillHistory();
+          if (!backfillDone) { backfillDone = true; scheduleBackfill(500); }
         }
         if (!hasDirty()) return applied;
         var onlyTimeline = !Object.keys(dirty.pins).length && !Object.keys(dirty.last).length && !Object.keys(dirty.library).length && !dirty.settings;
@@ -822,10 +822,18 @@
     saveLib(key, e);
   }
 
-  // Один раз на устройстве: перенести уже накопленную историю Лампы в «Просмотренное»,
-  // сохраняя её порядок (последний просмотр — первым). Новые просмотры получают время «сейчас» и встают выше.
+  // Перенос истории Лампы (локальной или CUB, если вошли в аккаунт) в «Библиотеку», сохраняя порядок.
+  // Повторяемый: добавляет только фильмы, которых в библиотеке ещё нет (в т. ч. удалённых —
+  // их «надгробия» не перезаписываются). История CUB приходит с сервера с задержкой, поэтому
+  // перенос запускается несколько раз и после каждого обновления закладок.
+  var backfillTimer = null;
+  var backfillDone = false;
+  function scheduleBackfill(ms) {
+    clearTimeout(backfillTimer);
+    backfillTimer = setTimeout(backfillHistory, ms || 3000);
+  }
+
   function backfillHistory() {
-    if (Lampa.Storage.get('gsync_history_imported', false)) return;
     var hist = [];
     try { hist = Lampa.Favorite.get({ type: 'history' }) || []; } catch (e) { return; }
     var all = allLib(), oldest = Date.now();
@@ -835,9 +843,9 @@
       var key = cardKey(card);
       if (!key || !(card.title || card.name)) return;
       var e = all[key];
-      if (e && !e.deleted && e.watched) return; // уже есть (с этого или другого устройства)
+      if (e) return; // уже есть (с этого или другого устройства) или удалён пользователем
       var t = oldest - 1000 * (i + 1);
-      e = e && !e.deleted ? JSON.parse(JSON.stringify(e)) : { flags: {} };
+      e = { flags: {} };
       e.card = slimCard(card);
       e.watched = t;
       e.updated = t;
@@ -845,7 +853,6 @@
       dirty.library[key] = e;
       added++;
     });
-    Lampa.Storage.set('gsync_history_imported', true);
     if (added) {
       writeStore(LIB, prune(all));
       scheduleFlush(500);
@@ -908,31 +915,69 @@
   }
 
   // Экран категории библиотеки — стандартная сетка карточек Лампы
+  function emptyTexts(filter) {
+    return {
+      title: 'Здесь пока пусто',
+      descr: filter === 'watched'
+        ? 'Сюда попадает всё, что вы начали смотреть'
+        : 'Отметьте фильм: кнопка с книжками на странице фильма или долгое нажатие на постер'
+    };
+  }
+
+  // Та же сетка, что у «Истории» Лампы (класс Category через Maker); старые версии Лампы —
+  // через устаревший InteractionCategory
   function LibraryComponent(object) {
-    var comp = new Lampa.InteractionCategory(object);
     var cards = libList(object.filter || 'watched');
     var PAGE = 60;
-    comp.create = function () {
+    function page(n) {
+      return { results: cards.slice((n - 1) * PAGE, n * PAGE), total_pages: Math.ceil(cards.length / PAGE), page: n };
+    }
+    var M = Lampa.Maker;
+    if (M && M.get && M.module && Lampa.Utils.createInstance && Lampa.Router) {
+      var mod = M.module('Category');
+      var comp = Lampa.Utils.createInstance(M.get('Category'), object, {
+        module: mod.toggle(mod.MASK.base, 'Pagination'),
+        empty: emptyTexts(object.filter)
+      });
+      comp.use({
+        onCreate: function () {
+          var self = this;
+          if (!cards.length) return this.empty();
+          setTimeout(function () { self.build(page(1)); }, 10);
+        },
+        onNext: function (resolve, reject) {
+          var d = page(this.object.page);
+          if (d.results.length) resolve.call(this, d); else reject.call(this);
+        },
+        onInstance: function (item, data) {
+          item.use({
+            onEnter: Lampa.Router.call.bind(Lampa.Router, 'full', data),
+            onFocus: function () { try { Lampa.Background.change(Lampa.Utils.cardImgBackground(data)); } catch (e) {} }
+          });
+        }
+      });
+      return comp;
+    }
+    var old = new Lampa.InteractionCategory(object);
+    old.create = function () {
       if (!cards.length) return this.empty();
-      this.build({ results: cards.slice(0, PAGE), total_pages: Math.ceil(cards.length / PAGE), page: 1 });
+      this.build(page(1));
     };
-    comp.nextPageReuest = function (obj, resolve, reject) {
-      var part = cards.slice((obj.page - 1) * PAGE, obj.page * PAGE);
-      if (part.length) resolve({ results: part, total_pages: Math.ceil(cards.length / PAGE), page: obj.page }); else reject();
+    old.nextPageReuest = function (obj, resolve, reject) {
+      var d = page(obj.page);
+      if (d.results.length) resolve(d); else reject();
     };
-    var origEmpty = comp.empty;
-    comp.empty = function () {
+    var origEmpty = old.empty;
+    old.empty = function () {
       origEmpty.call(this);
       try {
-        var r = $(this.render(true));
-        r.find('.empty__title').text('Здесь пока пусто');
-        r.find('.empty__descr').text(object.filter === 'watched'
-          ? 'Сюда попадает всё, что вы начали смотреть'
-          : 'Отметьте фильм: кнопка с книжками на странице фильма или долгое нажатие на постер');
+        var r = $(this.render(true)), t = emptyTexts(object.filter);
+        r.find('.empty__title').text(t.title);
+        r.find('.empty__descr').text(t.descr);
         r.find('.empty__footer').remove();
       } catch (e) {}
     };
-    return comp;
+    return old;
   }
 
   function openLibrary(filter) {
@@ -1020,8 +1065,12 @@
         if (e && e.where === 'history' && e.card && e.card.id) markWatched(e.card);
       });
     } catch (e) {}
-    // Без аккаунта/синхронизации нужна история и без интернета — пусть будет импорт и без ключа
-    setTimeout(function () { if (!cfg) backfillHistory(); }, 15000);
+    // История CUB подгружается с сервера с задержкой: повторяем перенос в первую минуту
+    // и после каждого обновления закладок
+    [15000, 40000, 70000].forEach(function (ms) { setTimeout(function () { scheduleBackfill(100); }, ms); });
+    Lampa.Listener.follow('state:changed', function (e) {
+      if (e && e.target === 'favorite') scheduleBackfill(3000);
+    });
     Lampa.Player.listener.follow('create', function (e) {
       var d = e && e.data;
       // только фильм/серия (у них есть таймкод), а не трейлер

@@ -62,7 +62,8 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 | `Lampa.Listener 'full'` `complite` | кнопки «Продолжить» / «Выбрать источник» на карточке (`refreshCard`) |
 | `Lampa.Torrent.start(element, movie)` | запуск раздачи без поиска |
 | `Lampa.Player.listener 'create'` | macOS: стартовая позиция для IINA и запись запуска |
-| `Lampa.Favorite.listener 'add'` (`where: 'history'`) | «Библиотека»: Лампа добавляет фильм в историю при каждом запуске просмотра (и со своим, и с внешним плеером) → `markWatched`. Одноразовый импорт существующей истории — `backfillHistory()` (флаг `gsync_history_imported`), порядок сохраняется |
+| `Lampa.Favorite.listener 'add'` (`where: 'history'`) | «Библиотека»: Лампа добавляет фильм в историю при каждом запуске просмотра (и со своим, и с внешним плеером) → `markWatched`. Перенос существующей истории Лампы/CUB — `backfillHistory()`: повторяемый (после первой синхронизации, через 15/40/70 с и по `state:changed` `favorite`, т. к. история CUB приходит с сервера позже), добавляет только ключи, которых нет в библиотеке (надгробия тоже пропускаются, поэтому удалённое не возвращается), порядок сохраняется |
+| `Lampa.Maker.get('Category')` + `Lampa.Utils.createInstance` | экран «Библиотеки» — тот же класс и сетка, что у «Истории» Лампы (`favorite`); на старых Лампах — `InteractionCategory` |
 | `Lampa.SettingsApi` | раздел «Синхронизация таймкодов» |
 | `Lampa.Head.addIcon` | кнопка «Обновить» (после `.open--search`): `refreshAll()` — `pollIina` (Mac) → `cycle({force, final})` → проверка `VERSION` через API GitHub → при новой версии сброс кэша jsDelivr → `location.reload()` |
 
