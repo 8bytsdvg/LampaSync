@@ -14,7 +14,7 @@
   'use strict';
   if (window.__lampa_gsync) return;
   window.__lampa_gsync = true;
-  var VERSION = '1.0.0';
+  var VERSION = '1.0.1';
 
   var TAG = 'LampaSync';
   var MAX_ITEMS = 3000;
@@ -746,16 +746,14 @@
       }, 0);
     });
 
-    // Фильм из одного файла — сразу в плеер, без 10-секундного отсчёта.
-    // У сериала остаётся список серий.
+    // Раздача из одного видеофайла — сразу в плеер, без окна «Файлы» и 10-секундного отсчёта.
+    // Если файлов несколько (сериал), список остаётся.
     Lampa.Listener.follow('torrent_file', function (e) {
       if (e.type === 'list_close') pinLaunch = false;
-      if (e.type === 'render' && pinLaunch) {
-        if (e.items && e.items.length === 1) {
-          pinLaunch = false;
-          setTimeout(function () { e.item.trigger('hover:enter'); }, 50);
-        } else pinLaunch = false;
-      }
+      if (e.type === 'render' && e.items && e.items.length === 1 && e.item) {
+        pinLaunch = false;
+        setTimeout(function () { e.item.trigger('hover:enter'); }, 50);
+      } else if (e.type === 'render') pinLaunch = false;
     });
   }
 
