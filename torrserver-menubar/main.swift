@@ -49,6 +49,8 @@ final class App: NSObject, NSApplicationDelegate {
         let nc = NSWorkspace.shared.notificationCenter
         nc.addObserver(self, selector: #selector(appLaunched(_:)), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         nc.addObserver(self, selector: #selector(appTerminated(_:)), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
+        // Переключились на Лампу, а сервер почему-то не работает — поднять
+        nc.addObserver(self, selector: #selector(appLaunched(_:)), name: NSWorkspace.didActivateApplicationNotification, object: nil)
 
         let atLogin = ProcessInfo.processInfo.arguments.contains("--background")
         if lampaRunning() {
@@ -87,6 +89,7 @@ final class App: NSObject, NSApplicationDelegate {
     @objc func appLaunched(_ n: Notification) {
         if isLampa(n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication) {
             manual = false // дальше сервер принадлежит Лампе: значок прячем, выключится вместе с ней
+            if server?.isRunning != true { crashes = [] }
             startServer()
         }
     }
@@ -141,14 +144,14 @@ final class App: NSObject, NSApplicationDelegate {
         do { try p.run(); server = p } catch { NSLog("TorrServer start failed: \(error)") }
     }
 
-    // Сервер завершился сам: пока он нужен (Лампа открыта или включён вручную) — перезапускаем,
-    // но не больше 3 раз за минуту, чтобы не крутиться при постоянной ошибке (например, занят порт)
+    // Сервер завершился сам: пока он нужен (Лампа открыта или включён вручную) — перезапускаем:
+    // первые 3 раза за минуту через 2 с, дальше раз в 30 с, чтобы не крутиться при постоянной ошибке
     func serverCrashed() {
         server = nil
         defer { updateIcon() }
         crashes = crashes.filter { $0.timeIntervalSinceNow > -60 } + [Date()]
-        guard (manual || lampaRunning()) && crashes.count <= 3 else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+        guard manual || lampaRunning() else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + (crashes.count <= 3 ? 2 : 30)) { [weak self] in
             guard let self = self, self.manual || self.lampaRunning() else { return }
             self.startServer()
         }
@@ -168,13 +171,25 @@ final class App: NSObject, NSApplicationDelegate {
     // Оставшиеся процессы нашего TorrServer — запущенные по полному или относительному пути
     // («./TorrServer --port …» от старых запускалок). Шаблон привязан к началу командной строки,
     // чтобы не задеть посторонние процессы, в аргументах которых просто встречается это имя.
+    // Ждём, пока они действительно завершатся (до 5 с, потом SIGKILL): иначе новый сервер
+    // не сможет занять порт 8090
     func killStrays() {
-        let escaped = NSRegularExpression.escapedPattern(for: binary)
-        let p = Process()
-        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
-        p.arguments = ["-f", "^(\\./TorrServer|" + escaped + ") --port 8090"]
-        try? p.run()
-        p.waitUntilExit()
+        let pattern = "^(\\./TorrServer|" + NSRegularExpression.escapedPattern(for: binary) + ") --port 8090"
+        func run(_ tool: String, _ args: [String]) -> Int32 {
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: tool)
+            p.arguments = args
+            p.standardOutput = FileHandle.nullDevice
+            do { try p.run() } catch { return -1 }
+            p.waitUntilExit()
+            return p.terminationStatus
+        }
+        if run("/usr/bin/pkill", ["-f", pattern]) != 0 { return } // никого не нашли
+        for _ in 0..<50 {
+            if run("/usr/bin/pgrep", ["-f", pattern]) != 0 { return }
+            usleep(100_000)
+        }
+        _ = run("/usr/bin/pkill", ["-9", "-f", pattern])
     }
 
     func applicationWillTerminate(_ n: Notification) { stopServer() }
