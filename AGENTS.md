@@ -8,7 +8,7 @@
 |---|---|
 | `lampa-sync.js` | Единственный плагин Лампы. Без сборки, ES5, работает в WebView Android TV, Safari и NW.js |
 | `iina/lampa-sync.iinaplugin/` | Плагин IINA (macOS): пишет позицию просмотра в TorrServer |
-| `torrserver-menubar/` | Swift-помощник для строки меню macOS: стартует при входе (LaunchAgent `local.torrserver.menu`, флаг `--background`), по `NSWorkspace` didLaunch/didTerminate включает TorrServer вместе с `~/Applications/Lampa.app` и выключает при её закрытии |
+| `torrserver-menubar/` | Фоновый Swift-помощник macOS без значка: LaunchAgent `local.torrserver.menu` (KeepAlive, флаг `--background`); по `NSWorkspace` didLaunch/didTerminate включает TorrServer вместе с `~/Applications/Lampa.app` и выключает при её закрытии; перезапуск упавшего сервера (≤3 раз/мин); по SIGTERM останавливает сервер; при старте без Лампы убивает осиротевший сервер; повторное открытие `.app` — ручное вкл/выкл |
 | `tests/sync.test.mjs` | Симуляция двух устройств и GitHub API; `node tests/sync.test.mjs` |
 
 Плагин раздаётся через jsDelivr: `https://cdn.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js`. Лампа скачивает его при каждом запуске. После пуша в `main` сбросьте кэш jsDelivr, иначе обновление придёт с задержкой до 12 ч:

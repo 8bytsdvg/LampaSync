@@ -1,50 +1,57 @@
 import AppKit
 
-// TorrServer в строке меню, привязанный к Лампе.
-// Работает в фоне с входа в систему и ничего не показывает. macOS сама сообщает о запуске
-// и закрытии приложений (без опроса): открыли Лампу — сервер запускается и появляется значок,
-// закрыли Лампу — сервер останавливается и значок пропадает.
-// Открыть TorrServer.app вручную — запустить сервер без Лампы.
+// Фоновый помощник: TorrServer работает ровно тогда, когда открыта Лампа.
+// Стартует при входе в систему (LaunchAgent), без значка и окон. macOS сама сообщает
+// о запуске и закрытии приложений (без опроса): открыли Лампу — сервер запустился,
+// закрыли — остановился. Открыть TorrServer.app вручную без Лампы — включить сервер,
+// открыть ещё раз — выключить.
 final class App: NSObject, NSApplicationDelegate {
     let dir = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/TorrServer")
     let lampaURL = FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Applications/Lampa.app")
-    var item: NSStatusItem!
+    var binary: String { dir.appendingPathComponent("TorrServer").path }
     var server: Process?
-    var statusLine: NSMenuItem!
-    var timer: Timer?
+    var manual = false              // сервер включён вручную, без Лампы
+    var crashes: [Date] = []        // для ограничения перезапусков
+    var signals: [DispatchSourceSignal] = []
 
     func applicationDidFinishLaunching(_ n: Notification) {
-        item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        let img = NSImage(systemSymbolName: "arrow.down.circle", accessibilityDescription: "TorrServer")
-        img?.isTemplate = true
-        item.button?.image = img
-
-        let menu = NSMenu()
-        statusLine = NSMenuItem(title: "TorrServer: запуск…", action: nil, keyEquivalent: "")
-        menu.addItem(statusLine)
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Открыть Лампу", action: #selector(openLampa), keyEquivalent: "l")
-        menu.addItem(withTitle: "Открыть веб-панель", action: #selector(openPanel), keyEquivalent: "o")
-        menu.addItem(.separator())
-        menu.addItem(withTitle: "Остановить TorrServer", action: #selector(stopFromMenu), keyEquivalent: "q")
-        menu.items.forEach { $0.target = self }
-        item.menu = menu
-        item.isVisible = false
+        // Помощника завершили (выход из системы, launchctl, обновление) — сервер не должен остаться сиротой
+        for sig in [SIGTERM, SIGINT, SIGHUP] {
+            signal(sig, SIG_IGN)
+            let src = DispatchSource.makeSignalSource(signal: sig, queue: .main)
+            src.setEventHandler { [weak self] in self?.stopServer(); exit(0) }
+            src.resume()
+            signals.append(src)
+        }
 
         let nc = NSWorkspace.shared.notificationCenter
         nc.addObserver(self, selector: #selector(appLaunched(_:)), name: NSWorkspace.didLaunchApplicationNotification, object: nil)
         nc.addObserver(self, selector: #selector(appTerminated(_:)), name: NSWorkspace.didTerminateApplicationNotification, object: nil)
 
-        // Запущены при входе в систему — ждём Лампу; открыты вручную — сразу включаем сервер
         let atLogin = ProcessInfo.processInfo.arguments.contains("--background")
-        if lampaRunning() || !atLogin { startServer() }
+        if lampaRunning() {
+            startServer()
+        } else if atLogin {
+            killStrays() // сервер, оставшийся от прошлого запуска без Лампы
+        } else {
+            manual = true
+            startServer()
+        }
     }
 
-    // Повторное открытие TorrServer.app, когда он уже работает в фоне
+    // Повторное открытие TorrServer.app без Лампы: включить/выключить сервер вручную
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        startServer()
+        if lampaRunning() {
+            startServer()
+        } else if manual, let p = server, p.isRunning {
+            manual = false
+            stopServer()
+        } else {
+            manual = true
+            startServer()
+        }
         return false
     }
 
@@ -54,37 +61,48 @@ final class App: NSObject, NSApplicationDelegate {
     }
 
     func lampaRunning() -> Bool {
-        NSWorkspace.shared.runningApplications.contains { isLampa($0) }
+        NSWorkspace.shared.runningApplications.contains { isLampa($0) && !$0.isTerminated }
     }
 
     @objc func appLaunched(_ n: Notification) {
-        if isLampa(n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication) { startServer() }
+        if isLampa(n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication) {
+            manual = false
+            startServer()
+        }
     }
 
     @objc func appTerminated(_ n: Notification) {
-        if isLampa(n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication) { stopServer() }
+        if isLampa(n.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication) {
+            manual = false
+            stopServer()
+        }
     }
 
     func startServer() {
-        item.isVisible = true
-        if timer == nil {
-            timer = Timer.scheduledTimer(withTimeInterval: 3, repeats: true) { [weak self] _ in self?.refresh() }
-        }
-        if let p = server, p.isRunning { refresh(); return }
-        if isAlive() { refresh(); return } // уже запущен кем-то ещё
+        if let p = server, p.isRunning { return }
+        killStrays() // чужой/осиротевший экземпляр занял бы порт и не подчинялся бы нам
         let p = Process()
-        p.executableURL = dir.appendingPathComponent("TorrServer")
+        p.executableURL = URL(fileURLWithPath: binary)
         p.arguments = ["--port", "8090",
                        "--path", dir.appendingPathComponent("db").path,
                        "--logpath", dir.appendingPathComponent("torrserver.log").path]
         p.currentDirectoryURL = dir
         p.standardOutput = FileHandle.nullDevice
         p.standardError = FileHandle.nullDevice
-        p.terminationHandler = { [weak self] _ in DispatchQueue.main.async { self?.serverExited() } }
-        do { try p.run(); server = p } catch {
-            statusLine.title = "Ошибка запуска: \(error.localizedDescription)"
+        p.terminationHandler = { [weak self] _ in DispatchQueue.main.async { self?.serverCrashed() } }
+        do { try p.run(); server = p } catch { NSLog("TorrServer start failed: \(error)") }
+    }
+
+    // Сервер завершился сам: пока он нужен (Лампа открыта или включён вручную) — перезапускаем,
+    // но не больше 3 раз за минуту, чтобы не крутиться при постоянной ошибке (например, занят порт)
+    func serverCrashed() {
+        server = nil
+        crashes = crashes.filter { $0.timeIntervalSinceNow > -60 } + [Date()]
+        guard (manual || lampaRunning()) && crashes.count <= 3 else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+            guard let self = self, self.manual || self.lampaRunning() else { return }
+            self.startServer()
         }
-        refresh()
     }
 
     func stopServer() {
@@ -94,44 +112,26 @@ final class App: NSObject, NSApplicationDelegate {
             p.waitUntilExit()
         }
         server = nil
-        serverExited()
+        killStrays()
     }
 
-    // Сервер остановлен или упал — прячем значок до следующего запуска Лампы
-    func serverExited() {
-        server = nil
-        timer?.invalidate()
-        timer = nil
-        item.isVisible = false
+    // Оставшиеся процессы нашего TorrServer — запущенные по полному или относительному пути
+    // («./TorrServer --port …» от старых запускалок). Шаблон привязан к началу командной строки,
+    // чтобы не задеть посторонние процессы, в аргументах которых просто встречается это имя.
+    func killStrays() {
+        let escaped = NSRegularExpression.escapedPattern(for: binary)
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        p.arguments = ["-f", "^(\\./TorrServer|" + escaped + ") --port 8090"]
+        try? p.run()
+        p.waitUntilExit()
     }
 
-    func isAlive() -> Bool {
-        guard let url = URL(string: "http://127.0.0.1:8090/echo") else { return false }
-        var ok = false
-        let sem = DispatchSemaphore(value: 0)
-        var req = URLRequest(url: url); req.timeoutInterval = 1
-        URLSession.shared.dataTask(with: req) { _, r, _ in
-            ok = (r as? HTTPURLResponse)?.statusCode == 200; sem.signal()
-        }.resume()
-        _ = sem.wait(timeout: .now() + 1.5)
-        return ok
-    }
-
-    func refresh() {
-        statusLine.title = isAlive() ? "TorrServer работает · 127.0.0.1:8090" : "TorrServer: запуск…"
-    }
-
-    @objc func openLampa() { NSWorkspace.shared.open(lampaURL) }
-    @objc func openPanel() { NSWorkspace.shared.open(URL(string: "http://127.0.0.1:8090")!) }
-    @objc func stopFromMenu() { stopServer() }
-
-    func applicationWillTerminate(_ n: Notification) {
-        if let p = server, p.isRunning { p.terminate() }
-    }
+    func applicationWillTerminate(_ n: Notification) { stopServer() }
 }
 
 let app = NSApplication.shared
 let delegate = App()
 app.delegate = delegate
-app.setActivationPolicy(.accessory)
+app.setActivationPolicy(.prohibited)
 app.run()

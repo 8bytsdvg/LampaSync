@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Собирает TorrServer.app (значок в строке меню) в ~/Applications.
+# Собирает TorrServer.app (фоновый помощник: TorrServer работает, пока открыта Лампа) в ~/Applications.
 # Сам TorrServer (бинарник) должен лежать в ~/Library/Application Support/TorrServer/TorrServer
 set -e
 cd "$(dirname "$0")"
@@ -37,9 +37,12 @@ cat > $PL <<AGENT
     <string>--background</string>
   </array>
   <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
   <key>ProcessType</key><string>Interactive</string>
 </dict></plist>
 AGENT
 launchctl bootout gui/$(id -u)/local.torrserver.menu 2>/dev/null || true
-launchctl bootstrap gui/$(id -u) $PL
-echo "Готово: ~/Applications/TorrServer.app (запускается при входе, включает сервер вместе с Лампой)"
+# дождаться выгрузки старого помощника, иначе bootstrap может не пройти
+for i in {1..20}; do launchctl print gui/$(id -u)/local.torrserver.menu >/dev/null 2>&1 || break; sleep 0.25; done
+for i in {1..5}; do launchctl bootstrap gui/$(id -u) $PL 2>/dev/null && break; sleep 1; done
+echo "Готово: TorrServer будет включаться вместе с Лампой и выключаться при её закрытии"
