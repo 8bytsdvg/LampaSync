@@ -1,0 +1,17 @@
+{
+  "name": "Lampa Sync",
+  "identifier": "lampa.gsync",
+  "version": "2.0.0",
+  "description": "Передаёт время просмотра в TorrServer, откуда его забирает Лампа (плагин Lampa Sync).",
+  "author": {
+    "name": "8bytsdvg"
+  },
+  "entry": "main.js",
+  "permissions": [
+    "network-request"
+  ],
+  "allowedDomains": [
+    "127.0.0.1",
+    "localhost"
+  ]
+}
