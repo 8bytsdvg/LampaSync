@@ -72,7 +72,7 @@ curl https://purge.jsdelivr.net/gh/8bytsdvg/LampaSync@main/lampa-sync.js
 Синхронизации всё равно, откуда таймкод: ей достаточно, чтобы плеер так или иначе вызвал `Lampa.Timeline.update`.
 
 - **Android TV.** Нативная оболочка Лампы (`top.rootu.lampa`) получает позицию от плеера: Just+ Player — отчётами во время просмотра (лучший вариант), MX/Just Player/VLC/MPV/ViMu — при закрытии.
-- **macOS + IINA.** IINA не сообщает позицию Лампе. Поэтому: Лампа добавляет к ссылке TorrServer метку `gsync_t=<секунды>` → плагин IINA перематывает и каждые 10 с пишет позицию в TorrServer (`POST /viewed {action:"set", hash, file_index, timecode}`) → `pollIina()` в Лампе читает `/viewed` и вызывает `Timeline.update`. В TorrServer должно быть включено `TrackTimecode`.
+- **macOS + IINA.** IINA не сообщает позицию Лампе. Поэтому: Лампа добавляет к ссылке TorrServer метку `gsync_t=<секунды>` → плагин IINA перематывает и каждые 10 с пишет позицию в TorrServer (`POST /viewed {action:"set", hash, file_index, timecode}`) → `pollIina()` в Лампе читает `/viewed` и вызывает `Timeline.update`. Длительность Лампе взять неоткуда, поэтому плагин IINA пишет её второй записью с `file_index + 100000` (`DUR_SHIFT`), а `pollIina()` считает по ней процент. В TorrServer должно быть включено `TrackTimecode`.
 - **Windows (Lampa Desktop, NW.js).** В Лампе уже есть модуль внешних плееров: VLC, MPC-HC, MPC-BE, MPC-QT, KMPlayer (тип определяется по пути `player_nw_path`). Лампа запускает плеер и опрашивает его веб-интерфейс (порт 3999; VLC — пароль `123456`), а при закрытии записывает таймкод. **Дорабатывать ничего не нужно** — плагин подхватит этот таймкод.
 
 ### Если нужен другой плеер на Windows (mpv, PotPlayer и т. п.)

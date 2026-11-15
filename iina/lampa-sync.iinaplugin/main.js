@@ -5,6 +5,8 @@ const { core, event, http, console } = iina;
 let timer = null;
 let snap = null;   // последняя позиция: при закрытии окна плеер уже сброшен
 let lastSent = -1;
+let durSent = false;
+const DUR_SHIFT = 100000; // длительность — отдельной записью с file_index + DUR_SHIFT (читает lampa-sync.js)
 
 // http://127.0.0.1:8090/stream/...?link=<hash>&index=<n>&play
 function parse(url) {
@@ -19,7 +21,7 @@ function parse(url) {
 function remember() {
   const t = parse(core.status.url);
   const position = core.status.position;
-  if (t && position && position >= 5) snap = { t, position: Math.round(position) };
+  if (t && position && position >= 5) snap = { t, position: Math.round(position), duration: Math.round(core.status.duration || 0) };
 }
 
 async function report(reason) {
@@ -31,6 +33,13 @@ async function report(reason) {
       headers: { "Content-Type": "application/json" },
       data: { action: "set", hash: snap.t.hash, file_index: snap.t.index, timecode: snap.position }
     });
+    if (!durSent && snap.duration > 0) {
+      await http.post(snap.t.server + "/viewed", {
+        headers: { "Content-Type": "application/json" },
+        data: { action: "set", hash: snap.t.hash, file_index: snap.t.index + DUR_SHIFT, timecode: snap.duration }
+      });
+      durSent = true;
+    }
     console.log(`GSync ${reason}: ${snap.position}`);
   } catch (e) {
     console.log("GSync error: " + e);
@@ -40,6 +49,7 @@ async function report(reason) {
 event.on("iina.file-loaded", () => {
   snap = null;
   lastSent = -1;
+  durSent = false;
   const m = String(core.status.url || "").match(/[?&]gsync_t=(\d+)/);
   if (m && Number(m[1]) > 5) {
     setTimeout(() => { core.seekTo(Number(m[1])); core.osd("Продолжение с " + Math.floor(m[1] / 60) + " мин"); }, 300);

@@ -12,7 +12,7 @@
  */
 (function () {
   'use strict';
-  var VERSION = '1.4.2';
+  var VERSION = '1.4.3';
 
   function newerVersion(a, b) {
     var x = String(a).split('.'), y = String(b).split('.');
@@ -240,6 +240,10 @@
       .then(function (t) { try { return JSON.parse(t); } catch (e) { return null; } });
   }
 
+  // IINA знает длительность, Лампа — нет: плагин IINA кладёт её в TorrServer
+  // отдельной записью с file_index + DUR_SHIFT (без длительности полоса застревает на 1%)
+  var DUR_SHIFT = 100000;
+
   function pollIina() {
     var recent = launches().filter(function (l) { return Date.now() - l.at < 3 * 3600 * 1000 && streamInfo(l.url); });
     if (!recent.length) return Promise.resolve();
@@ -248,9 +252,11 @@
       var info = streamInfo(l.url);
       return viewed(info, { action: 'list', hash: info.hash }).then(function (rows) {
         var row = (rows || []).filter(function (r) { return r.file_index == info.index; })[0];
-        if (!row || !row.timecode || row.timecode === l.tc) return;
+        var durRow = (rows || []).filter(function (r) { return r.file_index == info.index + DUR_SHIFT; })[0];
         var local = Lampa.Timeline.view(l.hash) || {};
-        var dur = local.duration || 0;
+        var dur = local.duration || (durRow && durRow.timecode) || 0;
+        // то же время, но длительность появилась только сейчас — пересчитать процент
+        if (!row || !row.timecode || (row.timecode === l.tc && (local.duration || !dur))) return;
         Lampa.Timeline.update({
           hash: l.hash, time: row.timecode, duration: dur,
           percent: dur ? Math.min(100, Math.round(row.timecode / dur * 100)) : (local.percent || 1)

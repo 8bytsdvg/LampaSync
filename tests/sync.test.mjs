@@ -8,6 +8,7 @@ async function fakeFetch(url, o) {
   o = o || { method: 'GET', headers: {} };
   if (url.endsWith('/gists?per_page=100')) { gh.calls.push('LIST'); return { ok: true, json: async () => gh.list || [] }; }
   if (url.endsWith('/gists') && o.method === 'POST') { gh.calls.push('CREATE'); gh.list = [{ id: 'g', public: false, description: JSON.parse(o.body).description }]; return { ok: true, json: async () => ({ id: 'g' }) }; }
+  if (url.endsWith('/viewed')) return { ok: true, text: async () => JSON.stringify(gh.viewed || []) };
   if (url.startsWith('raw:')) return { ok: true, text: async () => gh.raw[url] };
   if (gh.status) { gh.calls.push(o.method + '!' + gh.status); return { status: gh.status, ok: false, headers: { get: () => null } }; }
   gh.calls.push(o.method + (o.headers['If-None-Match'] ? '(cond)' : ''));
@@ -43,7 +44,7 @@ function device(name, localTimeline, key, history) {
     Favorite: { get: () => store.__history || [], listener: { follow: (ev, fn) => (L.fav = fn) } }, Select: { show() {} }, InteractionCategory: function () {}
   };
   vm.createContext(ctx);
-  vm.runInContext(code.replace("  if (window.appready) start();", "  globalThis.__t = { backfillHistory: backfillHistory, removeFromWatched: removeFromWatched, cycle: cycle, pins: pins, allLast: allLast, playPinned: playPinned, setFlag: setFlag, libList: libList, markWatched: markWatched };\n  if (window.appready) start();"), ctx);
+  vm.runInContext(code.replace("  if (window.appready) start();", "  globalThis.__t = { pollIina: pollIina, backfillHistory: backfillHistory, removeFromWatched: removeFromWatched, cycle: cycle, pins: pins, allLast: allLast, playPinned: playPinned, setFlag: setFlag, libList: libList, markWatched: markWatched };\n  if (window.appready) start();"), ctx);
   return { name, store, L, t: ctx.__t, Lampa: ctx.Lampa };
 }
 const wait = ms => new Promise(r => setTimeout(r, ms));
@@ -191,4 +192,13 @@ late.t.removeFromWatched({ id: 401, title: 'FromCub' });
 late.L['l_state:changed']({ target: 'favorite', reason: 'update' });
 await wait(3500);
 ok('26 removed film stays removed', !late.t.libList('watched').some(c => c.id === 401));
+// 27: IINA даёт время, длительность приходит отдельной записью (file_index + 100000)
+const im = device('iina', { ep: { time: 3142, duration: 0, percent: 1, updated: 300 } });
+im.store.ls_gsync_launches = JSON.stringify([{ url: 'http://127.0.0.1:8090/stream/a.mkv?link=hh&index=73&play', hash: 'ep', at: Date.now(), tc: 3142 }]);
+gh.viewed = [{ hash: 'hh', file_index: 73, timecode: 3142 }];
+await im.t.pollIina();
+ok('27 no duration yet: timecode untouched', im.store.file_view.ep.percent === 1);
+gh.viewed.push({ hash: 'hh', file_index: 100073, timecode: 3300 });
+await im.t.pollIina();
+ok('28 duration from IINA fixes percent of finished episode', im.store.file_view.ep.percent === 95 && im.store.file_view.ep.duration === 3300);
 process.exit(0);
